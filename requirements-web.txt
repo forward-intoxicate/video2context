@@ -1,0 +1,4 @@
+# 本地网页界面（可选）—— 需要 Python 3.10+，Gradio 6.x / 5.x 均可
+# 安装：pip install -r requirements-web.txt
+-r requirements.txt
+gradio>=5.0,<7

@@ -1,0 +1,9 @@
+# Windows + NVIDIA 显卡的 CUDA 运行库（可选）
+# 不装也能用：程序检测到显卡不可用时会自动退回 CPU。
+# 安装：pip install -r requirements-gpu-win.txt
+#
+# 说明：ctranslate2（faster-whisper 的推理后端）在 Windows 上需要 cuBLAS 12 + cuDNN 9，
+# 这两个 pip 包会把 DLL 装到 site-packages\nvidia\...，程序启动时会自动注册进 DLL 搜索路径。
+# 已装 CUDA Toolkit 12.x 且自带 cuDNN 9 的机器可以不装。
+nvidia-cublas-cu12>=12.4.5 ; sys_platform == "win32"
+nvidia-cudnn-cu12>=9.1.0 ; sys_platform == "win32"

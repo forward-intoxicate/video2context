@@ -1,0 +1,4 @@
+# video2context 核心依赖 —— 没有显卡也能跑（自动使用 CPU）
+# 安装：pip install -r requirements.txt
+faster-whisper>=1.1.0
+imageio-ffmpeg>=0.5.1

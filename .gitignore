@@ -1,0 +1,22 @@
+# 虚拟环境 / 本地环境
+.venv/
+.condaenv/
+.tmp/
+
+# 运行产物与本地模型
+output/
+models/
+*.wav
+*.part
+
+# 仅本开发环境需要的沙箱兼容垫片（不属于工程内容）
+scripts/_sandbox/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/

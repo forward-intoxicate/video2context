@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video2context"
+version = "0.1.0"
+description = "视频/音频 → 文字：ffmpeg 抽取音轨 + faster-whisper 本地识别（中文/英文），支持 GPU 与纯 CPU"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["asr", "speech-to-text", "whisper", "faster-whisper", "subtitle", "transcription", "chinese", "video"]
+authors = [{ name = "forward-intoxicate" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Text Processing :: Linguistic",
+    # 许可证由上面的 license = "MIT"（PEP 639）表达，
+    # 不能再加 "License :: OSI Approved :: MIT License" 分类器，否则 setuptools 报错。
+]
+dependencies = [
+    "faster-whisper>=1.1.0",
+    "imageio-ffmpeg>=0.5.1",
+]
+
+[project.optional-dependencies]
+# 本地网页界面（需要 Python 3.10+）
+web = ["gradio>=5.0,<7"]
+# Windows + NVIDIA 显卡的 CUDA 运行库
+gpu-win = [
+    "nvidia-cublas-cu12>=12.4.5 ; sys_platform == 'win32'",
+    "nvidia-cudnn-cu12>=9.1.0 ; sys_platform == 'win32'",
+]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.urls]
+Homepage = "https://github.com/forward-intoxicate/video2context"
+Repository = "https://github.com/forward-intoxicate/video2context"
+Issues = "https://github.com/forward-intoxicate/video2context/issues"
+Documentation = "https://github.com/forward-intoxicate/video2context/tree/main/docs"
+
+[project.scripts]
+video2context = "video2context.cli:main"
+
+[tool.setuptools]
+packages = ["video2context"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+extend-exclude = [".venv", ".tmp", "models", "output", "samples"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+    "E501",   # 行长由 formatter 控制，中文注释不好断行
+    "SIM108", # 三元表达式不一定更好读
+    # 保留 Optional[X] 写法：本工程声明支持 Python 3.9，而 Gradio 会在运行时
+    # 读取并求值函数注解，`X | None` 在 3.9 上会直接抛 TypeError。
+    "UP045",
+    "UP007",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]  # 测试里需要先改 sys.path 再导入
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

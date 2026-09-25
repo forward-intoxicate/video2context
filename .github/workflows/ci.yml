@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: 测试 (Python ${{ matrix.python }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  python: "3.9" }
+          - { os: ubuntu-latest,  python: "3.13" }
+          - { os: windows-latest, python: "3.11" }
+          - { os: macos-latest,   python: "3.11" }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: 安装依赖（仅核心，测试不需要模型和显卡）
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 运行单元测试
+        run: python -m unittest discover -s tests -v
+
+      - name: 环境自检
+        run: python -m video2context doctor
+
+      # Windows PowerShell 5.1 会用 GBK 解析无 BOM 的 UTF-8 脚本，
+      # 含中文的 .ps1 必须带 BOM 否则字符串会被截断。
+      - name: 校验 PowerShell 脚本（编码 + 语法）
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($file in @("scripts/setup.ps1", "scripts/run_web.ps1")) {
+            $bytes = [System.IO.File]::ReadAllBytes($file)
+            if (-not ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) {
+              Write-Host "::error file=$file::缺少 UTF-8 BOM，Windows PowerShell 5.1 下中文会乱码"
+              $failed = $true
+            }
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) {
+              Write-Host "::error file=$file::$($errors.Count) 个语法错误"
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+          Write-Host "PowerShell 脚本编码与语法均正常"
+
+  lint:
+    name: 代码风格与文档链接
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install ruff
+      - run: ruff check video2context tests scripts
+      - name: 校验文档相对链接与锚点
+        run: python scripts/check_docs.py
