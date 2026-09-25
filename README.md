@@ -464,7 +464,8 @@ video2context/
 ├─ requirements-gpu-win.txt  # + Windows NVIDIA CUDA 运行库
 ├─ requirements-dev.txt      # + pytest / ruff
 ├─ pyproject.toml
-├─ LICENSE / CHANGELOG.md / CONTRIBUTING.md
+├─ LICENSE / THIRD_PARTY_NOTICES.md
+├─ CHANGELOG.md / CONTRIBUTING.md
 └─ README.md
 ```
 
@@ -506,7 +507,9 @@ ruff check video2context tests scripts      # 代码检查
 
 ## 许可证
 
-[MIT](LICENSE)。第三方依赖与模型的许可证见 LICENSE 末尾说明；
+本项目采用 [MIT 许可证](LICENSE)。
+
+第三方依赖、模型权重与测试素材的来源和许可情况见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；
 `samples/` 里的中文测试音频来自 [LibriVox](https://librivox.org/)（公共领域）。
 
 如果这个工程帮到了你，欢迎点个 Star ⭐

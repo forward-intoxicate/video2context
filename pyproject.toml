@@ -9,7 +9,7 @@ description = "视频/音频 → 文字：ffmpeg 抽取音轨 + faster-whisper �
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 keywords = ["asr", "speech-to-text", "whisper", "faster-whisper", "subtitle", "transcription", "chinese", "video"]
 authors = [{ name = "forward-intoxicate" }]
 classifiers = [

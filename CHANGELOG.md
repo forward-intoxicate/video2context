@@ -25,5 +25,6 @@
 - 28 项离线单元测试（不需要模型和网络）
 - GitHub Actions CI：4 组平台/Python 版本矩阵 + ruff 检查 + 文档链接校验 + PowerShell 脚本编码检查
 - 自带 `scripts/check_docs.py`：校验文档相对链接与锚点
+- `THIRD_PARTY_NOTICES.md`：第三方依赖、模型权重与测试素材的许可说明
 
 [0.1.0]: https://github.com/forward-intoxicate/video2context/releases/tag/v0.1.0

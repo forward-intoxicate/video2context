@@ -12,7 +12,7 @@ DOCS = [
     ROOT / "README.md",
     ROOT / "CHANGELOG.md",
     ROOT / "CONTRIBUTING.md",
-    ROOT / "LICENSE",
+    ROOT / "THIRD_PARTY_NOTICES.md",
     ROOT / "docs" / "architecture.md",
     ROOT / "docs" / "models.md",
     ROOT / "docs" / "troubleshooting.md",
@@ -76,7 +76,7 @@ def main() -> int:
                     problems.append(f"[锚点失效] {doc.relative_to(ROOT)} → {target}")
 
     if problems:
-        print("发现 %d 个问题：" % len(problems))
+        print(f"发现 {len(problems)} 个问题：")
         for item in problems:
             print("  " + item)
         return 1
