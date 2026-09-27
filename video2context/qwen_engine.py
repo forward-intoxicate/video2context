@@ -101,9 +101,6 @@ LANGUAGE_ALIASES: dict[str, str] = {
     "mk": "Macedonian", "mkd": "Macedonian", "macedonian": "Macedonian",
 }
 
-_ALIGN_TOLERANCE = 0.02  # 时间戳与文本对齐时允许的失配比例
-
-
 class QwenAsrError(RuntimeError):
     """Qwen3-ASR 相关的可读错误（环境缺失、模型缺失、识别失败）。"""
 
