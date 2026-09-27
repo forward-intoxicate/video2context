@@ -86,6 +86,12 @@ def build_demo(
     import gradio as gr
 
     copy_kwargs = _textbox_extra_kwargs(gr)
+    # 下拉框的 value 必须是 choices 里的某一项，所以认不出就退回第一项（默认引擎）
+    default_engine_id = _engine_value(default_engine)
+    default_engine_label = next(
+        (label for label, engine in ENGINE_LABELS if engine == default_engine_id),
+        ENGINE_LABELS[0][0],
+    )
 
     def run_job(
         file_path: Optional[str],
@@ -181,10 +187,7 @@ def build_demo(
                 )
                 engine_in = gr.Dropdown(
                     choices=[label for label, _ in ENGINE_LABELS],
-                    value=next(
-                        label for label, engine in ENGINE_LABELS
-                        if engine == _engine_value(default_engine)
-                    ),
+                    value=default_engine_label,
                     label="识别引擎",
                     info="中文课程/讲座（有公式、术语）建议选 qwen3-asr；没显卡或想省事就用默认的",
                 )

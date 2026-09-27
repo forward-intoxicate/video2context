@@ -604,6 +604,16 @@ def _cmd_webui(args: argparse.Namespace) -> int:
     except ImportError as exc:
         print(f"缺少 gradio 依赖：{exc}\n请执行：pip install gradio", file=sys.stderr)
         return 1
+
+    engine = resolve_engine(args.engine)
+    if engine not in ENGINE_CHOICES:
+        source = "--engine" if args.engine else "环境变量 V2C_ENGINE"
+        print(
+            f"参数错误：不认识的引擎 {engine!r}（来自 {source}），可选：{', '.join(ENGINE_CHOICES)}",
+            file=sys.stderr,
+        )
+        return 2
+
     launch(
         host=args.host,
         port=args.port,
@@ -612,7 +622,7 @@ def _cmd_webui(args: argparse.Namespace) -> int:
         default_model=args.model_dir or args.model,
         default_device=args.device,
         output_dir=args.output_dir,
-        default_engine=resolve_engine(args.engine),
+        default_engine=engine,
     )
     return 0
 
