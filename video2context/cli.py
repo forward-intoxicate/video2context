@@ -311,6 +311,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="本地模型目录（配合 scripts/download_model.py 使用，会作为界面里的默认模型）",
     )
     w.add_argument("--device", default="auto", help="auto/cuda/cpu")
+    w.add_argument(
+        "--engine",
+        default=ENGINE_FASTER_WHISPER,
+        help=f"界面里默认选中的识别引擎（{', '.join(ENGINE_CHOICES)}）",
+    )
     w.add_argument("-o", "--output-dir", default="output", help="输出目录（默认 output）")
 
     # -------------------------------------------------------------- doctor
@@ -605,6 +610,7 @@ def _cmd_webui(args: argparse.Namespace) -> int:
         default_model=args.model_dir or args.model,
         default_device=args.device,
         output_dir=args.output_dir,
+        default_engine=normalize_engine(args.engine),
     )
     return 0
 

@@ -19,6 +19,8 @@
   `--qwen-low-mem`（分片直接进显存，绕开"整片读进 CPU 内存"导致的 `页面文件太小`）、
   失败自动降级重试、把原始报错翻译成可照做的建议
 - `--qwen-setup`：只做环境自检（解释器 / 模型 / 对齐模型），不转写
+- 网页界面新增「识别引擎」下拉框（`webui --engine` 决定默认选中项）；选 Qwen + 翻译任务会提前拦下并提示，
+  没有对齐模型时状态栏会标注"字幕时间是估算的"
 - 新增模块/脚本：`qwen_engine.py`、`_qwen_worker.py`、`scripts/setup_qwen.ps1`、`scripts/setup_qwen.sh`、
   `requirements-qwen.txt`、`experiments/`（实测脚本与原始数据，含英文 WER 报告工具）
 - `TranscriptionResult` 增加 `engine` 与 `extra` 字段；JSON 的 `asr.engine` 标明结果出自哪个引擎

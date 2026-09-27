@@ -329,8 +329,16 @@ python -m video2context webui --model-dir models\faster-whisper-large-v3   # 用
 python -m video2context webui --share                  # 生成公网临时链接
 ```
 
-页面左侧上传视频、选模型/语种/设备，右侧实时进度 + 全文 + 分段表格 + JSON 下载。
+页面左侧上传视频、选**识别引擎**/模型/语种/设备，右侧实时进度 + 全文 + 分段表格 + JSON 下载。
 默认只监听 `127.0.0.1`（仅本机可访问）；局域网访问加 `--host 0.0.0.0`。
+
+```powershell
+# 让界面默认选中 Qwen3-ASR（需先装 .venv-qwen）
+python -m video2context webui --engine qwen3-asr
+```
+
+> 界面里选 Qwen3-ASR 但没装独立环境时，会直接弹出可照做的报错，不会静默失败。
+> Qwen 引擎下「翻译成英文」不可用，界面会提前拦住并提示改用 faster-whisper。
 
 ---
 

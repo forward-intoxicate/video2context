@@ -302,6 +302,10 @@ context 对结果**没有可观测影响**，详见 [models.md 第 6.4 节](mode
 ### Web UI（`webui.py`）
 
 - Gradio `Blocks`，`queue(default_concurrency_limit=1)` —— 串行处理，避免并发抢显存；
+- 识别引擎做成下拉框（`ENGINE_LABELS`），标签里直接写清取舍，`--engine` 决定默认选中项；
+  切到 Qwen 时若模型下拉框仍是 Whisper 的默认名，会被当成"未指定"交给内部自动选；
+  选 Qwen + 翻译任务会在点击时被拦下并提示怎么改（而不是等模型加载完才报错）；
+- 无对齐模型时会用 `asr.timestamp_source` 判断并在状态栏挂一条"字幕时间是估算的"警告；
 - 兼容 Gradio 5.x/6.x：`theme` 在 6.0 移到了 `launch()`，`show_copy_button` 换成了 `buttons`，
   代码用 `inspect.signature` 判断后择优传参；
 - `GRADIO_TEMP_DIR` 默认指向工程内 `output/.gradio`，避免受限系统临时目录带来的问题；
