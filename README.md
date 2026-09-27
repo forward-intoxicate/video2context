@@ -427,9 +427,13 @@ Qwen3-ASR 本身只吐**一整段文字**，没有分段。本工程的做法是
   按标点/停顿切句 → SRT 时间精确到词（实测切出的分段能 100% 还原原文，标点不丢）；
 - 没装对齐模型 → 按标点切句，再用 faster-whisper 自带的 Silero VAD 找出说话区间，
   按字数比例把句子分配到区间里。**能用，但时间只是估算**，JSON 里
-  `asr.timestamp_source` 会明确写成 `vad-proportional` 而不是 `forced-aligner`。
-  注意：**只装 Qwen 的机器没有 faster-whisper，也就没有 VAD**，这时退化成"按总时长平均分配"
-  （日志会说明原因）。所以走 Qwen-only 路线时，建议把对齐模型一起装上。
+  `asr.timestamp_source` 会写成 `vad-proportional`；
+- 连说话区间也拿不到（**只装 Qwen 的机器没有 faster-whisper，也就没有 VAD**）→
+  退化成"在整条音轨上平均分配"，这时标签是 `even-spread`（最粗的一档），
+  日志会说明原因。所以走 Qwen-only 路线时，**建议把对齐模型一起装上**。
+
+三档质量在 JSON 里用 `asr.timestamp_source` 如实标明：
+`forced-aligner`（精确到词）/ `vad-proportional`（估算）/ `even-spread`（最粗）/ `none`。
 
 **2. `context`（词表偏置）实测无效**
 
@@ -750,9 +754,12 @@ powershell -ExecutionPolicy Bypass -File scripts\setup_qwen.ps1
 换 `models\Qwen3-ASR-0.6B`。详见 [docs/troubleshooting.md](docs/troubleshooting.md)。
 
 **Q：Qwen 引擎的字幕时间戳不准？**
-检查 JSON 里的 `asr.timestamp_source`：`forced-aligner` = 精确，`vad-proportional` = 估算。
-是后者就说明没装对齐模型，补下：
+检查 JSON 里的 `asr.timestamp_source`，它标明字幕时间用的是哪一档：
+`forced-aligner` = 精确到词；`vad-proportional` = 按说话区间估算；
+`even-spread` = 整条音轨平均分（只装 Qwen、没装 Whisper 也没有对齐模型时会出现，最粗）。
+除第一档外都建议补下对齐模型（1.8GB），补完直接跳到精确档：
 `python scripts\download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out models\Qwen3-ForcedAligner-0.6B`。
+详见 [docs/troubleshooting.md 7.4](docs/troubleshooting.md#74-字幕时间戳不准--所有段落挤在一起)。
 
 **Q：网页界面能远程/局域网访问吗？**
 `--host 0.0.0.0 --port 7860`，然后用本机 IP 访问。公网临时分享用 `--share`（走 Gradio 官方隧道）。

@@ -166,7 +166,13 @@ def build_demo(
             f"｜实时率 {asr['realtime_factor']:.2f}"
         )
         if asr.get("timestamp_source") == "vad-proportional":
-            status += "\n\n⚠️ 没有找到强制对齐模型，字幕时间是**估算**的（见 docs/troubleshooting.md 7.4）"
+            status += "\n\n⚠️ 没有对齐模型，字幕时间是**估算**的（见 docs/troubleshooting.md 7.4）"
+        elif asr.get("timestamp_source") == "even-spread":
+            status += (
+                "\n\n⚠️⚠️ 既没有对齐模型、也没有说话区间，字幕时间是**在整条音轨上平均分配**的，"
+                "长静音片段会明显对不上。建议装上 Qwen3-ForcedAligner-0.6B"
+                "（见 docs/troubleshooting.md 7.4）"
+            )
         status += f"\n\n结果文件：`{result.json_path}`"
 
         json_path = result.outputs.get("json")

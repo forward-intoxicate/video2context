@@ -267,6 +267,11 @@ print(result.outputs["srt"])
 print(result.payload["asr"]["engine"], result.payload["asr"]["timestamp_source"])
 ```
 
+> `timestamp_source` 标明字幕时间来自哪一档：`forced-aligner`（词级精确）/
+> `vad-proportional`（按说话区间估算）/ `even-spread`（整条音轨平均分，最粗）/
+> `none`。**只装 Qwen 的机器**没有 faster-whisper 也就没有 VAD，
+> 不装对齐模型时会落到 `even-spread` —— 所以这条路线建议把对齐模型一起装上。
+
 `process()` 是无状态函数（模型由内部缓存管理），可以直接放进任务队列。
 多进程并发时每个进程会各自加载一份模型，显存是叠加的 —— 别一下子开好几个。
 

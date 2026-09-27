@@ -293,6 +293,57 @@ class GlossaryPromptTest(unittest.TestCase):
         self.assertIsNone(glossary_prompt_for(TranscribeOptions(), None))
 
 
+class TimestampSourceTest(unittest.TestCase):
+    """字幕时间的来源必须如实标注 —— 三档质量对应三个不同的值。
+
+    对只部署 Qwen 的机器尤其要紧：没有 faster-whisper 就拿不到说话区间，
+    会掉到最粗的一档，用户必须能从 JSON 里看出来。
+    """
+
+    #: 故意指向不存在的音频：_speech_regions() 会失败 → 拿不到说话区间
+    MISSING_AUDIO = Path("不存在的音频.wav")
+
+    def _run(self, payload: dict) -> object:
+        from video2context.qwen_engine import QwenAsrEngine
+
+        engine = QwenAsrEngine(model="models/Qwen3-ASR-1.7B", aligner="off")
+        return engine._to_result(
+            payload,
+            audio_path=self.MISSING_AUDIO,
+            aligner=None,
+            context=None,
+            progress_callback=None,
+            log=lambda _msg: None,
+        )
+
+    def test_forced_aligner_when_mapping_succeeds(self) -> None:
+        payload = {
+            "text": "Hello world.",
+            "duration": 1.0,
+            "language": "English",
+            "time_stamps": [
+                {"text": "Hello", "start": 0.0, "end": 0.5},
+                {"text": "world", "start": 0.5, "end": 1.0},
+            ],
+        }
+        result = self._run(payload)
+        self.assertEqual(result.extra["timestamp_source"], "forced-aligner")
+        self.assertEqual([s.text for s in result.segments], ["Hello world."])
+
+    def test_even_spread_when_no_vad_available(self) -> None:
+        # 只装 Qwen 的典型情况：有文字、没对齐模型、也没有 faster-whisper 的 VAD
+        payload = {"text": "你好。世界。", "duration": 10.0, "language": "Chinese", "time_stamps": []}
+        result = self._run(payload)
+        self.assertEqual(result.extra["timestamp_source"], "even-spread")
+        self.assertEqual(len(result.segments), 2)
+
+    def test_none_when_text_is_empty(self) -> None:
+        payload = {"text": "", "duration": 5.0, "language": "Chinese", "time_stamps": []}
+        result = self._run(payload)
+        self.assertEqual(result.extra["timestamp_source"], "none")
+        self.assertEqual(result.segments, [])
+
+
 class QwenPythonTest(unittest.TestCase):
     def test_explicit_missing_path_is_not_silently_ignored(self) -> None:
         # 明确指定了就用它，不存在就报 None（而不是偷偷回退到 .venv-qwen）

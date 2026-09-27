@@ -744,15 +744,35 @@ class QwenAsrEngine:
         duration = float(payload.get("duration") or 0.0)
         stamps = payload.get("time_stamps") or []
 
-        segments = group_time_stamps(text, stamps) if stamps else []
-        if segments:
-            log(f"      按时间戳切出 {len(segments)} 段（强制对齐）")
-        elif text:
+        # 字幕时间有三档质量，这里记录**实际走了哪一档**并写进 JSON。
+        # 注意不能用"有没有拿到时间戳"来判定：对齐时间戳存在但映射失败时会退回估算，
+        # 那时标签必须是估算而不是 forced-aligner。
+        segments: list[Segment] = []
+        source = "none"
+        if stamps:
+            segments = group_time_stamps(text, stamps)
+            if segments:
+                source = "forced-aligner"
+                log(f"      按时间戳切出 {len(segments)} 段（强制对齐，时间精确到词）")
+            else:
+                log("      ⚠ 对齐时间戳与文本对不上（token 映射失败），退回按标点切句估算时间")
+        if not segments and text:
             sentences = split_text_into_sentences(text)
             regions = _speech_regions(audio_path, log)
             segments = distribute_sentences(sentences, regions, duration)
-            log(f"      无对齐模型：按标点切成 {len(segments)} 句，时间按比例分配（字幕时间不精确）")
-        else:
+            if regions:
+                source = "vad-proportional"
+                log(
+                    f"      无对齐模型：按标点切成 {len(segments)} 句，"
+                    f"时间按 {len(regions)} 个说话区间比例分配（不精确）"
+                )
+            else:
+                source = "even-spread"
+                log(
+                    f"      无对齐模型、也没有说话区间：按标点切成 {len(segments)} 句，"
+                    "时间在整条音轨上平均分配（最粗的一档，字幕会铺到没人说话的地方）"
+                )
+        elif not text:
             log("      ⚠ 识别结果为空（音频可能是纯音乐或静音）")
 
         if progress_callback:
@@ -780,9 +800,10 @@ class QwenAsrEngine:
             extra={
                 "aligner": aligner,
                 "time_stamps": len(stamps),
-                "timestamp_source": "forced-aligner" if stamps and segments else (
-                    "vad-proportional" if segments else "none"
-                ),
+                # 字幕时间实际来自哪一档，见 _to_result 里的注释：
+                # forced-aligner（词级精确）/ vad-proportional（按说话区间估算）
+                # / even-spread（整条音轨平均分，最粗）/ none（没切出分段）
+                "timestamp_source": source,
                 "low_mem": self.low_mem,
                 "python": str(self.python) if self.python else None,
                 "context_applied": bool(context),

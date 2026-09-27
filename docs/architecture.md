@@ -238,12 +238,17 @@ Whisper 和 Qwen 各自是可选的一层（见 [deploy.md](deploy.md)）。
 #### Qwen 只输出一整段文字，字幕分段是本工程做的
 
 这是接入 Qwen 最费事的地方：它没有 faster-whisper 那种天然的分段与时间戳。
-`qwen_engine.py` 提供两条路径：
+`qwen_engine.py` 提供**三档**，实际走了哪一档会如实写进 `asr.timestamp_source`：
 
-| 条件 | 时间戳来源 | 算法 |
+| 条件 | `timestamp_source` | 算法 |
 |---|---|---|
-| 装了 `Qwen3-ForcedAligner-0.6B` | `forced-aligner` | 见下 |
-| 没装 | `vad-proportional` | 按标点切句 → Silero VAD 找说话区间 → 按字数比例分配 |
+| 装了 `Qwen3-ForcedAligner-0.6B` 且映射成功 | `forced-aligner` | 见下（精确到词） |
+| 没装对齐模型，但能拿到 Silero VAD 的说话区间 | `vad-proportional` | 按标点切句 → 按字数比例分配到说话区间 |
+| 两者都没有（**只装 Qwen 的机器**） | `even-spread` | 按标点切句 → 在整条音轨上平均分配（最粗） |
+
+> Silero VAD 的代码在 `faster-whisper` 包里，所以"只装 Qwen"这条路线的退化路径
+> 会掉到第三档。定位这个标签时**不能看"有没有拿到时间戳"**——对齐时间戳存在但
+> token 映射失败时也会退到估算，那时标签必须是估算而不是 `forced-aligner`。
 
 **精确路径（有对齐模型）**——难点在于对齐模型返回的 token **是去掉标点的**
 （`is_kept_char()` 只保留字母、数字、撇号），所以不能直接拼：
@@ -328,7 +333,8 @@ context 对结果**没有可观测影响**，详见 [models.md 第 6.4 节](mode
 - 识别引擎做成下拉框（`ENGINE_LABELS`），标签里直接写清取舍，`--engine` 决定默认选中项；
   切到 Qwen 时若模型下拉框仍是 Whisper 的默认名，会被当成"未指定"交给内部自动选；
   选 Qwen + 翻译任务会在点击时被拦下并提示怎么改（而不是等模型加载完才报错）；
-- 无对齐模型时会用 `asr.timestamp_source` 判断并在状态栏挂一条"字幕时间是估算的"警告；
+- 无对齐模型时会用 `asr.timestamp_source` 判断并在状态栏挂警告：
+  `vad-proportional` 提示"时间是估算的"，`even-spread` 提示得更重（连说话区间都没有）；
 - 兼容 Gradio 5.x/6.x：`theme` 在 6.0 移到了 `launch()`，`show_copy_button` 换成了 `buttons`，
   代码用 `inspect.signature` 判断后择优传参；
 - `GRADIO_TEMP_DIR` 默认指向工程内 `output/.gradio`，避免受限系统临时目录带来的问题；

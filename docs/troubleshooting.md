@@ -403,18 +403,28 @@ python -m video2context a.mp4 --engine qwen3-asr -m models\Qwen3-ASR-0.6B
 
 ### 7.4 字幕时间戳不准 / 所有段落挤在一起
 
-看结果 JSON 里的 `asr.timestamp_source`：
+Qwen3-ASR 本身**不输出时间戳**（只有一整段文字），字幕时间是本工程造的，有**三档质量**。
+结果 JSON 里的 `asr.timestamp_source` 会如实写明用的是哪一档：
 
-| 值 | 含义 | 处理 |
-|---|---|---|
-| `forced-aligner` | 词级时间戳，精确 | 无需处理 |
-| `vad-proportional` | 按说话区间**估算**的时间 | 补下对齐模型（1.8GB） |
-| `none` | 没切出分段 | 识别结果为空，检查音频是否有声音 |
+| 值 | 字幕时间怎么来的 | 精度 | 处理 |
+|---|---|---|---|
+| `forced-aligner` | 对齐模型给出的**词级**时间戳 | 精确到词 | 无需处理 |
+| `vad-proportional` | 按标点切句 + 按 Silero VAD 找到的**说话区间**按字数比例分配 | 估算，但字幕落在有声音的地方 | 想要精确就补下对齐模型 |
+| `even-spread` | 连说话区间都没有，在整条音轨上**平均分配** | 最粗，长静音视频会把字幕铺到没人说话的地方 | **建议补下对齐模型** |
+| `none` | 没切出分段 | — | 识别结果为空，检查音频有没有声音 |
 
-> **只装 Qwen 的机器**（没有 faster-whisper）拿不到 Silero VAD，
-> 所以退化路径会变成"按总时长平均分配"，日志里会说明：
-> 「未安装 faster-whisper，拿不到说话区间（只部署 Qwen 时属正常）」。
-> 这不是故障 —— 但这时**强烈建议**把对齐模型装上，字幕时间才准。
+**为什么会出现 `even-spread`**：找说话区间用的是 Silero VAD，而它的代码在
+`faster-whisper` 包里。**只部署 Qwen（不装 Whisper）的机器没有它**，于是掉到最粗的一档。
+日志会说明：
+
+```
+未安装 faster-whisper，拿不到说话区间（只部署 Qwen 时属正常）→ 句子时间按总时长平均分配；
+想要精确字幕时间请装对齐模型 Qwen3-ForcedAligner-0.6B，见 docs/deploy.md
+无对齐模型、也没有说话区间：按标点切成 7 句，时间在整条音轨上平均分配（最粗的一档…）
+```
+
+这不是故障，是那条部署路线的固有代价 —— 但**正解很便宜**：把 1.8GB 的对齐模型装上，
+直接跳到第一档，VAD 根本用不上。
 
 ```powershell
 .\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out models\Qwen3-ForcedAligner-0.6B
