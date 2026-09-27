@@ -1,4 +1,4 @@
-"""Qwen3-ASR 在本工程样例上的实测脚本（与 faster-whisper 对照）。
+r"""Qwen3-ASR 在本工程样例上的实测脚本（与 faster-whisper 对照）。
 
 在 **独立环境** `.venv-qwen` 里运行：
 
@@ -62,10 +62,9 @@ def load_low_mem(model_dir: str, device: str = "cuda:0"):
     import json
 
     import torch
+    from qwen_asr import Qwen3ASRModel  # noqa: F401  (导入即注册 AutoModel)
     from safetensors.torch import load_file
     from transformers import AutoConfig, AutoModel, AutoProcessor
-
-    from qwen_asr import Qwen3ASRModel  # noqa: F401  (导入即注册 AutoModel)
 
     directory = Path(model_dir)
     config = AutoConfig.from_pretrained(model_dir, trust_remote_code=True)
@@ -159,9 +158,10 @@ def main(argv: list[str] | None = None) -> int:
     }
     if args.aligner:
         kwargs["forced_aligner"] = args.aligner
-        kwargs["forced_aligner_kwargs"] = dict(
-            dtype=torch.bfloat16, device_map=kwargs["device_map"]
-        )
+        kwargs["forced_aligner_kwargs"] = {
+            "dtype": torch.bfloat16,
+            "device_map": kwargs["device_map"],
+        }
 
     print(f"[1/3] 加载模型 {args.model} …")
     t0 = time.perf_counter()

@@ -70,7 +70,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install ruff
-      - run: ruff check video2context tests scripts
+      - run: ruff check video2context tests scripts experiments
       - name: 校验文档相对链接与锚点
         run: python scripts/check_docs.py
       - name: 防泄露扫描（密钥）
