@@ -260,5 +260,41 @@ class MissingFfmpegMessageTest(unittest.TestCase):
         )
 
 
+class DoctorInterpreterWarningTest(unittest.TestCase):
+    """doctor 是大家检查环境的第一站，所以"用错 Python"必须在这里就点出来。"""
+
+    def _run_doctor(self) -> str:
+        import argparse
+        import contextlib
+        import io
+
+        from video2context import cli
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            cli._cmd_doctor(argparse.Namespace())
+        return buffer.getvalue()
+
+    def test_warns_when_using_the_wrong_python(self) -> None:
+        from video2context import config
+
+        with mock.patch.object(config, "interpreter_hint", return_value="\n⚠ 你现在用的不是工程的虚拟环境：\n"):
+            text = self._run_doctor()
+        self.assertIn("你现在用的不是工程的虚拟环境", text)
+
+    def test_ffmpeg_line_does_not_repeat_the_long_hint(self) -> None:
+        from video2context import config, ffmpeg_tools
+
+        hint = "\n⚠ 你现在用的不是工程的虚拟环境：\n"
+        not_found = ffmpeg_tools.FFmpegNotFoundError("未找到 ffmpeg。")
+        with (
+            mock.patch.object(config, "interpreter_hint", return_value=hint),
+            mock.patch.object(ffmpeg_tools, "find_ffmpeg", side_effect=not_found),
+        ):
+            text = self._run_doctor()
+        self.assertIn("原因见上方", text)  # 同一条长提示不该刷两遍
+        self.assertEqual(text.count("你现在用的不是工程的虚拟环境"), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -16,13 +16,28 @@
 
 ## 跑一下看看
 
-下面的命令假设已经装好环境、并且在工程根目录。Windows 用 `.\.venv\Scripts\python`，
-macOS / Linux 用 `./.venv/bin/python`（下同）。
+下面的命令为了简短写成 `python -m video2context ...`。
+**实际要换成工程虚拟环境里的 python**，两种写法任选一种：
 
-> ⚠️ **注意别用错 Python**。依赖（含自带 ffmpeg 的 `imageio-ffmpeg`）都装在工程的 `.venv` 里。
-> 如果你的提示符是 `(base)`（conda）或直接敲 `python`，会报「未找到 ffmpeg」。
-> 用下面的写法，或者先跑一次 `.\.venv\Scripts\Activate.ps1` 再敲 `python`。
-> 详见 [docs/troubleshooting.md 1.5](../docs/troubleshooting.md#15-敲-python-报未找到-ffmpeg缺少-faster-whisper-多半是跑错了-python)。
+| | Windows（PowerShell） | macOS / Linux |
+|---|---|---|
+| **写法 A**<br>直接用 venv 里的 python（不用激活，推荐） | `.\.venv\Scripts\python -m video2context 视频.mp4` | `./.venv/bin/python -m video2context 视频.mp4` |
+| **写法 B**<br>先激活，之后 `python` 就指向它 | `.\.venv\Scripts\Activate.ps1`<br>然后 `python -m video2context 视频.mp4` | `source .venv/bin/activate`<br>然后 `python -m video2context 视频.mp4` |
+
+⚠️ 直接敲 `python`（既没激活、也没写 venv 路径）= 跑到了系统或 conda 的 Python 上，
+会报「未找到 ffmpeg」。详见
+[docs/troubleshooting.md 1.5](../docs/troubleshooting.md#15-敲-python-报未找到-ffmpeg缺少-faster-whisper-多半是跑错了-python)。
+
+举例 —— 第一条命令的两种真实写法：
+
+```powershell
+# 写法 A（Windows，推荐）
+.\.venv\Scripts\python -m video2context samples\demo_zh_math.mp4
+
+# 写法 B：先激活一次，之后下面的 python 都成立
+.\.venv\Scripts\Activate.ps1
+python -m video2context samples\demo_zh_math.mp4
+```
 
 ```powershell
 # ① 最简：一条命令出文字（默认引擎，自动选 Qwen 或 Whisper）

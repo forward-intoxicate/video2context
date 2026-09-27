@@ -176,8 +176,8 @@ def interpreter_hint(
         f"    当前 Python ：{running}\n"
         f"    工程环境    ：{venv}\n"
         "  依赖（含自带 ffmpeg 的 imageio-ffmpeg）都装在工程环境里。\n"
-        "  改用工程环境跑（Windows）：\n"
-        f"    {venv} -m video2context <参数>\n"
+        "  改用工程环境跑（Windows），例如：\n"
+        f"    {venv} -m video2context samples\\demo_zh_math.mp4\n"
         "  或先激活它，之后 python 就指向工程环境：\n"
         "    .\\.venv\\Scripts\\Activate.ps1\n"
     )

@@ -556,9 +556,17 @@ def _cmd_qwen_setup(args: argparse.Namespace) -> int:
 def _cmd_doctor(_args: argparse.Namespace) -> int:
     import platform
 
+    from .config import interpreter_hint
+
     print(f"video2context {__version__} 环境自检")
     print(f"  {_align('Python')}: {sys.version.split()[0]}  ({sys.executable})")
     print(f"  {_align('平台')}: {platform.platform()}")
+
+    # 最常见的坑：敲了 `python` 但没激活 venv，于是依赖全都"没装"。
+    # 自检就是用来发现这种事的，所以放在最前面说。
+    hint = interpreter_hint()
+    if hint:
+        print(hint)
 
     try:
         from .ffmpeg_tools import ffmpeg_version, find_ffmpeg
@@ -566,7 +574,11 @@ def _cmd_doctor(_args: argparse.Namespace) -> int:
         print(f"  {_align('ffmpeg 路径')}: {find_ffmpeg()}")
         print(f"  {_align('ffmpeg 版本')}: {ffmpeg_version()}")
     except Exception as exc:
-        print(f"  {_align('ffmpeg')}: 不可用 → {exc}")
+        if hint:
+            # 上面那段 ⚠ 已经把真正的原因和改法说清楚了，这里别重复一遍长提示
+            print(f"  {_align('ffmpeg')}: 未找到（原因见上方 ⚠）")
+        else:
+            print(f"  {_align('ffmpeg')}: 不可用 → {exc}")
 
     for module_name in ("faster_whisper", "ctranslate2", "imageio_ffmpeg", "gradio"):
         try:

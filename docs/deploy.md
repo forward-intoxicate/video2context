@@ -245,8 +245,27 @@ V2C_ENGINE=faster-whisper
 
 ## 7. 怎么用
 
-下面假设已激活虚拟环境（Windows `.\.venv\Scripts\Activate.ps1`，macOS/Linux `source .venv/bin/activate`）。
-不想激活就把 `python` 换成 `.\.venv\Scripts\python` 或 `./.venv/bin/python`。
+### 命令怎么敲（先看这个）
+
+工程依赖装在专用虚拟环境 `.venv` 里，**命令有两种写法，任选一种，效果完全一样**：
+
+| | Windows（PowerShell） | macOS / Linux |
+|---|---|---|
+| **写法 A**<br>直接用 venv 里的 python（不用激活，推荐） | `.\.venv\Scripts\python -m video2context 视频.mp4` | `./.venv/bin/python -m video2context 视频.mp4` |
+| **写法 B**<br>先激活，之后 `python` 就指向它 | `.\.venv\Scripts\Activate.ps1`<br>然后 `python -m video2context 视频.mp4` | `source .venv/bin/activate`<br>然后 `python -m video2context 视频.mp4` |
+
+激活成功后提示符会从 `(base)` 之类变成 **`(.venv)`**；退出用 `deactivate`。
+
+> ⚠️ **直接敲 `python`（既没激活、也没写 venv 路径）= 跑到了系统或 conda 的 Python 上**，
+> 会报「未找到 ffmpeg」。这是本工程最常见的坑 ——
+> 详见 [troubleshooting.md 1.5](troubleshooting.md#15-敲-python-报未找到-ffmpeg缺少-faster-whisper-多半是跑错了-python)。
+
+**本节后面的示例为了简短统一写成 `python -m video2context ...`，
+请按上面的写法 A / B 替换。** 先跑一次自检可以确认环境对不对：
+
+```powershell
+.\.venv\Scripts\python -m video2context doctor
+```
 
 ### 先拿仓库自带的样例试一条
 

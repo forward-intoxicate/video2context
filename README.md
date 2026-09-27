@@ -38,6 +38,7 @@
 
 ## 目录
 
+- [命令怎么敲（先看这个）](#命令怎么敲先看这个)
 - [从 0 部署（各设备 / 各引擎）](#从-0-部署各设备--各引擎)
 - [这个工程适合谁](#这个工程适合谁)
 - [快速开始](#快速开始)
@@ -53,6 +54,34 @@
 - [开发 / 测试](#开发--测试)
 - [文档索引](#文档索引)
 - [许可证](#许可证)
+
+---
+
+## 命令怎么敲（先看这个）
+
+工程依赖装在专用的虚拟环境 `.venv` 里。**命令有两种写法，任选一种，效果完全一样**：
+
+| | Windows（PowerShell） | macOS / Linux |
+|---|---|---|
+| **写法 A**<br>直接用 venv 里的 python（不用激活，推荐） | `.\.venv\Scripts\python -m video2context 视频.mp4` | `./.venv/bin/python -m video2context 视频.mp4` |
+| **写法 B**<br>先激活，之后 `python` 就指向它 | `.\.venv\Scripts\Activate.ps1`<br>然后 `python -m video2context 视频.mp4` | `source .venv/bin/activate`<br>然后 `python -m video2context 视频.mp4` |
+
+激活成功后提示符会从 `(base)` 之类变成 **`(.venv)`**；退出用 `deactivate`。
+
+> ⚠️ **直接敲 `python`（既没激活、也没写 venv 路径）= 跑到了系统或 conda 的 Python 上**，
+> 会报「未找到 ffmpeg」——因为依赖（含自带 ffmpeg 的 imageio-ffmpeg）都在 `.venv` 里。
+> 这是本工程最常见的坑，详见 [docs/troubleshooting.md 1.5](docs/troubleshooting.md#15-敲-python-报未找到-ffmpeg缺少-faster-whisper-多半是跑错了-python)。
+
+**本文档后面为了简短，示例统一写成 `python -m video2context ...`。**
+看到这种命令时，请按上面的写法 A 或写法 B 替换 —— 例如：
+
+```powershell
+# 文档里写的是：      python -m video2context samples\demo_zh_math.mp4
+# Windows 实际要敲：  .\.venv\Scripts\python -m video2context samples\demo_zh_math.mp4
+```
+
+> 先跑一次 `python -m video2context doctor`（同样按上面的写法）能确认环境是否就绪；
+> 如果你用错了 Python，它会直接把这件事指出来。
 
 ---
 
@@ -172,20 +201,20 @@ TORCH_INDEX=cpu bash scripts/setup.sh    # macOS 一律用 cpu
 每个 `demo_*` 都配了 `demo_*.transcript.txt` 逐句稿子，可以对着检查识别结果。
 
 ```powershell
-# 最简：一条命令出文字
-python -m video2context samples\demo_zh_math.mp4
+# 最简：一条命令出文字（注意开头的 .\.venv\Scripts\python，见「命令怎么敲」）
+.\.venv\Scripts\python -m video2context samples\demo_zh_math.mp4
 
 # 出全套产物（JSON + 文本 + SRT + VTT）
-python -m video2context samples\demo_zh_math.mp4 --language zh -f json,txt,srt,vtt
+.\.venv\Scripts\python -m video2context samples\demo_zh_math.mp4 --language zh -f json,txt,srt,vtt
 
 # 只跑前 10 秒试参数，并实时打印每句
-python -m video2context samples\demo_zh_math.mp4 --duration 10 --stream
+.\.venv\Scripts\python -m video2context samples\demo_zh_math.mp4 --duration 10 --stream
 
 # 英文样例：两个引擎各跑一遍，再算 WER
-python -m video2context samples\demo_en_ml.mp4 --language en -f json,txt -n en-qwen
-python -m video2context samples\demo_en_ml.mp4 --language en -f json,txt -n en-whisper `
+.\.venv\Scripts\python -m video2context samples\demo_en_ml.mp4 --language en -f json,txt -n en-qwen
+.\.venv\Scripts\python -m video2context samples\demo_en_ml.mp4 --language en -f json,txt -n en-whisper `
     --engine faster-whisper --model-dir models\faster-whisper-large-v3
-python experiments\wer_report.py samples\demo_en_ml.transcript.txt output\en-qwen.txt output\en-whisper.txt
+.\.venv\Scripts\python experiments\wer_report.py samples\demo_en_ml.transcript.txt output\en-qwen.txt output\en-whisper.txt
 ```
 
 结果默认落在 `output\`。SRT / VTT 可以直接丢进播放器或剪辑软件。
@@ -299,9 +328,11 @@ bash scripts/setup_qwen.sh
 
 ### 命令行
 
-> 下面的命令假设已经激活虚拟环境：
-> Windows `.\.venv\Scripts\Activate.ps1`，macOS/Linux `source .venv/bin/activate`。
-> 不想激活就把 `python` 换成 `.\.venv\Scripts\python`（Windows）或 `./.venv/bin/python`。
+> 下面的示例写成 `python -m video2context ...` 是为了简短。
+> **实际要按[「命令怎么敲」](#命令怎么敲先看这个)替换**：
+> Windows 用 `.\.venv\Scripts\python -m video2context ...`，
+> macOS / Linux 用 `./.venv/bin/python -m video2context ...`；
+> 或者先激活虚拟环境（Windows `.\.venv\Scripts\Activate.ps1`，macOS/Linux `source .venv/bin/activate`）之后照抄即可。
 
 ```powershell
 # 最简（transcribe 是默认命令，可省略）
@@ -856,7 +887,7 @@ video2context/
 
 ```bash
 pip install -r requirements-dev.txt
-python -m unittest discover -s tests -v    # 101 项测试，离线、不需要模型和显卡、不需要密钥
+python -m unittest discover -s tests -v    # 109 项测试，离线、不需要模型和显卡、不需要密钥
 ruff check video2context tests scripts      # 代码检查
 python scripts/check_docs.py                # 文档链接与锚点
 python scripts/check_secrets.py --all       # 防泄露扫描
