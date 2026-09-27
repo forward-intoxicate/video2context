@@ -31,6 +31,11 @@ DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-chat"
 DEFAULT_TIMEOUT = 120.0
 
+#: 默认识别引擎。工程里所有引擎名的归一化在 pipeline 里做，
+#: 这里只提供"用户配置了什么"的原始值，避免 config ←→ pipeline 循环依赖。
+DEFAULT_ENGINE = "faster-whisper"
+ENGINE_ENV_VAR = "V2C_ENGINE"
+
 #: 需要在日志/输出里打码的密钥模式
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_\-]{8,}"),
@@ -113,6 +118,19 @@ def load_env_file(path: Optional[Path] = None, *, override: bool = False) -> dic
         if override or key not in os.environ:
             os.environ[key] = value
     return values
+
+
+def configured_engine(load_env: bool = True) -> str:
+    """用户配置的默认识别引擎（``V2C_ENGINE`` 环境变量或 ``.env``）。
+
+    返回**原始字符串**（未归一化），未配置时返回空串 —— 归一化与合法性校验在
+    :func:`video2context.pipeline.resolve_engine` 里做，那边才认识引擎名。
+    """
+    if load_env:
+        env_file = find_env_file()
+        if env_file:
+            load_env_file(env_file)
+    return os.environ.get(ENGINE_ENV_VAR, "").strip()
 
 
 @dataclass

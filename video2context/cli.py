@@ -16,11 +16,10 @@ from .ffmpeg_tools import format_hms, format_hms_ms
 from .glossary import Glossary
 from .pipeline import (
     ENGINE_CHOICES,
-    ENGINE_FASTER_WHISPER,
     TranscribeOptions,
     is_qwen_engine,
-    normalize_engine,
     process,
+    resolve_engine,
     scan_and_build_glossary,
 )
 from .transcriber import DEFAULT_MODEL, RECOMMENDED_MODELS
@@ -163,10 +162,11 @@ def build_parser() -> argparse.ArgumentParser:
     asr = t.add_argument_group("识别")
     asr.add_argument(
         "--engine",
-        default=ENGINE_FASTER_WHISPER,
+        default=None,
         help=(
             "识别引擎：faster-whisper（默认，轻量、无需 torch、CPU 也能跑）"
-            "或 qwen3-asr（中文同音词/数学符号明显更准，英文 WER 更低，但需要独立环境与约 4GB 显存）"
+            "或 qwen3-asr（中文同音词/数学符号明显更准，英文 WER 更低，但需要独立环境与约 4GB 显存）。"
+            "不指定时读环境变量/`.env` 里的 V2C_ENGINE，没有就用 faster-whisper"
         ),
     )
     asr.add_argument(
@@ -313,8 +313,8 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--device", default="auto", help="auto/cuda/cpu")
     w.add_argument(
         "--engine",
-        default=ENGINE_FASTER_WHISPER,
-        help=f"界面里默认选中的识别引擎（{', '.join(ENGINE_CHOICES)}）",
+        default=None,
+        help=f"界面里默认选中的识别引擎（{', '.join(ENGINE_CHOICES)}）；不指定时读环境变量 V2C_ENGINE",
     )
     w.add_argument("-o", "--output-dir", default="output", help="输出目录（默认 output）")
 
@@ -342,10 +342,11 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
         return 2
 
     # ---- 引擎校验 -------------------------------------------------------
-    engine = normalize_engine(args.engine)
+    engine = resolve_engine(args.engine)
     if engine not in ENGINE_CHOICES:
+        source = "--engine" if args.engine else "环境变量 V2C_ENGINE"
         print(
-            f"参数错误：不认识的引擎 {args.engine!r}，可选：{', '.join(ENGINE_CHOICES)}",
+            f"参数错误：不认识的引擎 {engine!r}（来自 {source}），可选：{', '.join(ENGINE_CHOICES)}",
             file=sys.stderr,
         )
         return 2
@@ -588,6 +589,7 @@ def _cmd_doctor(_args: argparse.Namespace) -> int:
     env_file = find_env_file()
     print(f"  配置文件 .env      : {env_file if env_file else '未找到（不影响命令行基础功能）'}")
     print(f"  大模型（词表推断） : {llm_settings().describe()}")
+    print(f"  默认识别引擎       : {resolve_engine()}（可用 --engine 覆盖，或在 .env 写 V2C_ENGINE）")
 
     import os
 
@@ -610,7 +612,7 @@ def _cmd_webui(args: argparse.Namespace) -> int:
         default_model=args.model_dir or args.model,
         default_device=args.device,
         output_dir=args.output_dir,
-        default_engine=normalize_engine(args.engine),
+        default_engine=resolve_engine(args.engine),
     )
     return 0
 

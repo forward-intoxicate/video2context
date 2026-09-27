@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import __version__
-from .config import llm_settings
+from .config import configured_engine, llm_settings
 from .ffmpeg_tools import (
     TARGET_CHANNELS,
     TARGET_SAMPLE_RATE,
@@ -59,6 +59,18 @@ def is_qwen_engine(value: Optional[str]) -> bool:
     return normalize_engine(value) == ENGINE_QWEN3_ASR
 
 
+def resolve_engine(value: Optional[str] = None) -> str:
+    """决定本次用哪个引擎：**显式参数 > `V2C_ENGINE`（含 .env）> 默认 faster-whisper**。
+
+    为什么默认不设成 Qwen：新克隆的仓库只有主环境（torch-free），
+    把 Qwen 设成出厂默认会让"装完就能用"直接失败。想在自己机器上默认用 Qwen，
+    在 ``.env`` 里写一行 ``V2C_ENGINE=qwen3-asr`` 即可。
+    """
+    if (value or "").strip():
+        return normalize_engine(value)
+    return normalize_engine(configured_engine()) or ENGINE_FASTER_WHISPER
+
+
 @dataclass
 class TranscribeOptions:
     """一次转写任务的全部可调参数。"""
@@ -96,7 +108,8 @@ class TranscribeOptions:
     llm_base_url: Optional[str] = None
     llm_model: Optional[str] = None
     # ---- 识别引擎 ----
-    engine: str = ENGINE_FASTER_WHISPER
+    #: 空串 = 未指定，按 V2C_ENGINE / 默认解析（见 resolve_engine）
+    engine: str = ""
     qwen_aligner: Optional[str] = None  # 强制对齐模型（None=自动探测，"off"=关闭）
     qwen_python: Optional[str] = None  # .venv-qwen 解释器（None=自动探测）
     qwen_low_mem: str = "auto"  # auto | on | off
@@ -177,7 +190,7 @@ def build_transcriber(opts: TranscribeOptions, log: LogCallback):
 
     Qwen3-ASR 走独立环境 + 子进程，见 :mod:`video2context.qwen_engine`。
     """
-    engine = normalize_engine(opts.engine)
+    engine = resolve_engine(opts.engine)
     if engine == ENGINE_QWEN3_ASR:
         from .qwen_engine import get_qwen_engine, resolve_qwen_model
 
@@ -224,7 +237,7 @@ def glossary_prompt_for(opts: TranscribeOptions, glossary: Optional[Glossary]) -
     """
     parts: list[str] = []
     if glossary is not None:
-        if is_qwen_engine(opts.engine):
+        if is_qwen_engine(resolve_engine(opts.engine)):
             context = glossary.to_context()
             if context:
                 parts.append(context)
@@ -396,7 +409,7 @@ def process(
                 shutil.rmtree(scan_temp, ignore_errors=True)
 
         effective_prompt = glossary_prompt_for(opts, glossary)
-        engine = normalize_engine(opts.engine)
+        engine = resolve_engine(opts.engine)
         if effective_prompt:
             log(f"      识别提示（{len(effective_prompt)} 字）：{effective_prompt}")
             if is_qwen_engine(engine):

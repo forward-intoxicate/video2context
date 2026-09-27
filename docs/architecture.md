@@ -257,9 +257,18 @@ faster-whisper 走 CTranslate2/ONNX 路线，两者塞进同一个环境会互�
 
 ### 4.9 引擎选择与词表提示的差异
 
-`pipeline.build_transcriber()` 按 `opts.engine` 造识别器，两个引擎的
+`pipeline.build_transcriber()` 按引擎造识别器，两个引擎的
 `.transcribe()` 签名与返回值一致（都返回 `TranscriptionResult`），所以
 流水线后面（写文件、进度条、JSON 组装）完全不用区分引擎。
+
+引擎本身由 `resolve_engine()` 决定，优先级是
+**`--engine` 参数 > 环境变量/`.env` 里的 `V2C_ENGINE` > `faster-whisper`**。
+`TranscribeOptions.engine` 的默认值是**空串**（表示"未指定"），
+这样才能区分"用户明确要求 faster-whisper"和"用户没提，去问配置"。
+
+> 出厂默认**故意保留** faster-whisper：新克隆的仓库只有主环境（torch-free），
+> 默认成 Qwen 会让"装完就能用"直接失败。想在自己机器上默认用 Qwen，
+> 写一行 `V2C_ENGINE=qwen3-asr` 即可 —— 默认值应该留给零额外依赖的那条路。
 
 `--model` 的默认值是 Whisper 的 `large-v3`；切到 Qwen 引擎时它显然不是用户本意，
 会被当作"未指定"，改用 Qwen 的默认模型（本地 `models/Qwen3-ASR-1.7B`，否则仓库名）。

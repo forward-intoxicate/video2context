@@ -21,6 +21,10 @@
 - `--qwen-setup`：只做环境自检（解释器 / 模型 / 对齐模型），不转写
 - 网页界面新增「识别引擎」下拉框（`webui --engine` 决定默认选中项）；选 Qwen + 翻译任务会提前拦下并提示，
   没有对齐模型时状态栏会标注"字幕时间是估算的"
+- 新增 `V2C_ENGINE` 配置项（环境变量或 `.env`）：在自己的机器上把 Qwen 设成默认引擎，
+  优先级为 `--engine` > `V2C_ENGINE` > `faster-whisper`。
+  出厂默认仍保留 faster-whisper —— 新克隆的仓库只有主环境（torch-free），
+  默认成 Qwen 会让"装完就能用"直接失败；`doctor` 会显示当前默认引擎
 - 新增模块/脚本：`qwen_engine.py`、`_qwen_worker.py`、`scripts/setup_qwen.ps1`、`scripts/setup_qwen.sh`、
   `requirements-qwen.txt`、`experiments/`（实测脚本与原始数据，含英文 WER 报告工具）
 - `TranscriptionResult` 增加 `engine` 与 `extra` 字段；JSON 的 `asr.engine` 标明结果出自哪个引擎
@@ -60,9 +64,8 @@
 
 ### 测试
 
-- 测试数 28 → 83：新增词表/配置单测与两遍解码的流水线集成测试（桩接大模型，不联网）；
+- 测试数 28 → 87：新增词表/配置单测与两遍解码的流水线集成测试（桩接大模型，不联网）；
   新增 `tests/test_qwen_engine.py`（29 项）：语种归一化、时间戳映射、切句、比例分配、引擎选择、解释器探测
-
 ## [0.1.0] - 2025-09-25
 
 首个可用版本。

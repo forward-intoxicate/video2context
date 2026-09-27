@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from video2context.config import ENGINE_ENV_VAR, configured_engine  # noqa: E402
 from video2context.glossary import Glossary, SymbolRepair  # noqa: E402
 from video2context.pipeline import (  # noqa: E402
     ENGINE_FASTER_WHISPER,
@@ -21,6 +23,7 @@ from video2context.pipeline import (  # noqa: E402
     glossary_prompt_for,
     is_qwen_engine,
     normalize_engine,
+    resolve_engine,
 )
 from video2context.qwen_engine import (  # noqa: E402
     _map_tokens_to_text,
@@ -200,6 +203,42 @@ class EngineSelectionTest(unittest.TestCase):
         engine = build_transcriber(opts, lambda _msg: None)
         # 不该把 "large-v3" 当成 Qwen 模型
         self.assertNotEqual(engine.model, DEFAULT_MODEL)
+
+
+class ResolveEngineTest(unittest.TestCase):
+    """默认识别引擎：显式参数 > V2C_ENGINE > faster-whisper。"""
+
+    def setUp(self) -> None:
+        self._saved = {key: os.environ.get(key) for key in (ENGINE_ENV_VAR, "V2C_ENV_FILE")}
+        # 指向一个不存在的文件，避免开发机上真实的 .env 干扰断言
+        os.environ["V2C_ENV_FILE"] = str(Path(__file__).resolve().parent / "_no_such_env_file")
+        os.environ.pop(ENGINE_ENV_VAR, None)
+
+    def tearDown(self) -> None:
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def test_defaults_to_faster_whisper(self) -> None:
+        self.assertEqual(resolve_engine(), ENGINE_FASTER_WHISPER)
+        self.assertEqual(resolve_engine(""), ENGINE_FASTER_WHISPER)
+        self.assertEqual(configured_engine(), "")
+
+    def test_env_var_supplies_the_default(self) -> None:
+        os.environ[ENGINE_ENV_VAR] = "qwen3-asr"
+        self.assertEqual(configured_engine(), "qwen3-asr")
+        self.assertEqual(resolve_engine(), ENGINE_QWEN3_ASR)
+
+    def test_explicit_argument_beats_env_var(self) -> None:
+        os.environ[ENGINE_ENV_VAR] = "qwen3-asr"
+        self.assertEqual(resolve_engine("faster-whisper"), ENGINE_FASTER_WHISPER)
+        self.assertEqual(resolve_engine("whisper"), ENGINE_FASTER_WHISPER)
+
+    def test_env_var_accepts_aliases(self) -> None:
+        os.environ[ENGINE_ENV_VAR] = "qwen"
+        self.assertEqual(resolve_engine(), ENGINE_QWEN3_ASR)
 
 
 class GlossaryPromptTest(unittest.TestCase):

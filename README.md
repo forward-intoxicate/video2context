@@ -287,7 +287,7 @@ python -m video2context doctor
 | `--stream` | 逐句实时打印 | 关 |
 | `--print-text` | 结束时把全文打到标准输出 | 关 |
 | `-q, --quiet` | 只输出结果路径 | 关 |
-| `--engine` | 识别引擎：`faster-whisper` / `qwen3-asr` | `faster-whisper` |
+| `--engine` | 识别引擎：`faster-whisper` / `qwen3-asr`（不指定时读 `V2C_ENGINE`） | `faster-whisper` |
 | `-m, --model` | 模型名或本地模型目录（两个引擎通用） | 按引擎自动 |
 | `-l, --language` | `auto` / `zh` / `en` / `ja` … | `auto` |
 | `--task` | `transcribe` 保持原语言 / `translate` 翻成英文 | `transcribe` |
@@ -369,6 +369,24 @@ python -m video2context webui --engine qwen3-asr
 python -m video2context 课程.mp4 -f json,srt -n 课程-whisper
 python -m video2context 课程.mp4 --engine qwen3-asr -f json,srt -n 课程-qwen
 ```
+
+### 想在自己机器上默认用 Qwen？
+
+在 `.env` 里写一行就行（`.env` 已在 `.gitignore` 中）：
+
+```ini
+V2C_ENGINE=qwen3-asr
+```
+
+优先级是 **`--engine` 参数 > `V2C_ENGINE` > `faster-whisper`**，所以随时能临时切回来：
+
+```powershell
+python -m video2context 课程.mp4 --engine faster-whisper   # 这一次用 Whisper
+python -m video2context doctor                              # 看当前默认引擎是什么
+```
+
+> 工程**故意不把 Qwen 设成出厂默认**：新克隆的仓库只有主环境（torch-free），
+> 默认成 Qwen 会让"装完就能用"直接失败。默认值要留给"零额外依赖也能跑"的那条路。
 
 ### Qwen 引擎的两个实测细节
 
@@ -749,7 +767,7 @@ video2context/
 
 ```bash
 pip install -r requirements-dev.txt
-python -m unittest discover -s tests -v    # 83 项测试，离线、不需要模型和显卡、不需要密钥
+python -m unittest discover -s tests -v    # 87 项测试，离线、不需要模型和显卡、不需要密钥
 ruff check video2context tests scripts      # 代码检查
 python scripts/check_docs.py                # 文档链接与锚点
 python scripts/check_secrets.py --all       # 防泄露扫描
