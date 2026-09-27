@@ -75,3 +75,25 @@ jobs:
         run: python scripts/check_docs.py
       - name: 防泄露扫描（密钥）
         run: python scripts/check_secrets.py --all
+
+      # 部署脚本是很多人接触本工程的第一步，语法错误必须在这里拦住。
+      # 只做语法检查（bash -n）：完整跑一遍会下载 3GB 的 torch，不适合放进 CI。
+      - name: 校验 shell 部署脚本语法
+        run: |
+          failed=0
+          for f in scripts/*.sh; do
+            if bash -n "$f"; then
+              echo "OK   $f"
+            else
+              echo "::error file=$f::bash 语法错误"
+              failed=1
+            fi
+          done
+          exit $failed
+
+      # shellcheck 在 ubuntu runner 上是预装的；只把 error 级当失败，
+      # 免得风格类提示（SC2086 引号之类）刷屏。
+      - name: shellcheck（error 级）
+        run: |
+          shellcheck --version >/dev/null 2>&1 || { echo "未安装 shellcheck，跳过"; exit 0; }
+          shellcheck -S error scripts/*.sh

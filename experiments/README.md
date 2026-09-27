@@ -5,7 +5,7 @@
 重依赖的实验各自独立环境。
 
 > **Qwen3-ASR 已经从实验转正**：主工程现在支持 `--engine qwen3-asr`
-> （见 [README](../README.md#识别引擎怎么选) 与 [docs/models.md](../docs/models.md#6-qwen3-asr可选的第二个引擎)），
+> （见 [README](../README.md#识别引擎怎么选) 与 [docs/models.md](../docs/models.md#6-qwen3-asr默认引擎)），
 > 一键安装脚本是 `scripts\setup_qwen.ps1`。
 > 本目录保留的是**当时的实验脚本与原始数据**，用于复现结论；
 > 日常使用不需要到这里来。

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import importlib.util
 import re
 import shutil
 import tempfile
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import __version__
-from .config import configured_engine, llm_settings
+from .config import DEFAULT_ENGINE, configured_engine, llm_settings
 from .ffmpeg_tools import (
     TARGET_CHANNELS,
     TARGET_SAMPLE_RATE,
@@ -44,14 +45,17 @@ ENGINE_ALIASES: dict[str, str] = {
     "qwen3_asr": ENGINE_QWEN3_ASR,
 }
 
+#: 都没指定时的引擎优先顺序（第一个「这台机器上可用」的胜出）
+ENGINE_PREFERENCE: tuple[str, ...] = (ENGINE_QWEN3_ASR, ENGINE_FASTER_WHISPER)
+
 _UNSAFE_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 def normalize_engine(value: Optional[str]) -> str:
-    """把引擎名（含别名、大小写）归一化。"""
+    """把引擎名（含别名、大小写）归一化；空值按首选引擎处理。"""
     cleaned = (value or "").strip().lower().replace(" ", "")
     if not cleaned:
-        return ENGINE_FASTER_WHISPER
+        return DEFAULT_ENGINE
     return ENGINE_ALIASES.get(cleaned, cleaned)
 
 
@@ -59,16 +63,64 @@ def is_qwen_engine(value: Optional[str]) -> bool:
     return normalize_engine(value) == ENGINE_QWEN3_ASR
 
 
-def resolve_engine(value: Optional[str] = None) -> str:
-    """决定本次用哪个引擎：**显式参数 > `V2C_ENGINE`（含 .env）> 默认 faster-whisper**。
+def available_engines() -> list[str]:
+    """这台机器上**现在就能用**的引擎。
 
-    为什么默认不设成 Qwen：新克隆的仓库只有主环境（torch-free），
-    把 Qwen 设成出厂默认会让"装完就能用"直接失败。想在自己机器上默认用 Qwen，
-    在 ``.env`` 里写一行 ``V2C_ENGINE=qwen3-asr`` 即可。
+    * Qwen3-ASR：只要独立环境（``.venv-qwen`` 或 ``V2C_QWEN_PYTHON``）存在就算可用 ——
+      模型没下载的话首次运行会自己去下（与 Whisper 的行为一致）；
+    * faster-whisper：看包装没装（用 ``find_spec`` 探测，不真的 import，省几百毫秒）。
+
+    这是「本机部署了哪个引擎」的判定依据：``doctor`` 用它报告环境，
+    默认引擎的选择也用它。
+    """
+    from .qwen_engine import find_qwen_python
+
+    found: list[str] = []
+    if find_qwen_python() is not None:
+        found.append(ENGINE_QWEN3_ASR)
+    try:
+        if importlib.util.find_spec("faster_whisper") is not None:
+            found.append(ENGINE_FASTER_WHISPER)
+    except (ImportError, ValueError):  # pragma: no cover - 环境异常时当作没装
+        pass
+    return found
+
+
+def resolve_engine(
+    value: Optional[str] = None,
+    *,
+    detect: bool = True,
+    available: Optional[list[str]] = None,
+) -> str:
+    """决定本次用哪个引擎。
+
+    优先级：**显式参数 > `V2C_ENGINE`（环境变量或 .env）> 本机可用的引擎 > 首选默认**。
+
+    第三档是"按部署情况自适应"：用户只装了 Whisper 就用 Whisper，只装了 Qwen 就用 Qwen，
+    两个都装了按 :data:`ENGINE_PREFERENCE`（Qwen 优先）。
+    这样无论走哪条部署路线，**默认都能直接跑起来**，不需要用户去记自己装了什么。
+
+    两个都没装时返回首选引擎（Qwen），随后 preflight 会给出对应的安装指引 ——
+    比抛一个"找不到模块"更有用。
+
+    ``available`` 只是给测试注入用的（真实调用走 :func:`available_engines`）。
     """
     if (value or "").strip():
         return normalize_engine(value)
-    return normalize_engine(configured_engine()) or ENGINE_FASTER_WHISPER
+
+    # 注意：这里必须先判空再归一化 —— normalize_engine("") 会返回首选引擎（非空），
+    # 直接 `if normalize_engine(configured_engine()):` 会让自动探测永远轮不到。
+    configured = configured_engine()
+    if configured.strip():
+        return normalize_engine(configured)
+
+    if detect:
+        installed = available_engines() if available is None else list(available)
+        for candidate in ENGINE_PREFERENCE:
+            if candidate in installed:
+                return candidate
+
+    return DEFAULT_ENGINE
 
 
 @dataclass

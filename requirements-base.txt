@@ -1,0 +1,12 @@
+# video2context 公共依赖 —— 任何识别引擎都需要
+#
+# 只做一件事：提供静态 ffmpeg 可执行文件（抽取音轨、探测媒体信息）。
+# 装了它就不必再手工安装 ffmpeg。
+#
+# 安装：
+#     pip install -r requirements-base.txt
+#
+# 只想用 Qwen3-ASR 引擎（不装 Whisper）时，主环境装这个文件就够了，
+# 识别本身跑在独立的 .venv-qwen 里，见 docs/deploy.md。
+
+imageio-ffmpeg>=0.5.1

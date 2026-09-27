@@ -11,11 +11,24 @@ cd video2context
 python -m venv .venv
 source .venv/bin/activate            # Windows: .\.venv\Scripts\Activate.ps1
 
-pip install -r requirements-dev.txt  # 核心依赖 + pytest + ruff
+pip install -r requirements-dev.txt  # 公共依赖 + Whisper 引擎 + pytest + ruff
 pip install -r requirements-web.txt  # 改网页界面时才需要
 ```
 
-改 Qwen 引擎时才需要独立环境（约 3GB，主环境刻意不装 torch）：
+依赖是**分层**的，改代码前先搞清楚自己动的是哪一层：
+
+| 文件 | 内容 | 谁依赖它 |
+|---|---|---|
+| `requirements-base.txt` | `imageio-ffmpeg` | 所有代码路径（抽音轨） |
+| `requirements.txt` | base + `faster-whisper` | **只有** Whisper 引擎 |
+| `requirements-qwen.txt` | `qwen-asr` + torch 等（装在 `.venv-qwen`） | **只有** Qwen 引擎 |
+| `requirements-web.txt` | + Gradio | 只有网页界面 |
+
+所以主包**不能**在模块顶层 import `faster_whisper` 或任何 torch 相关的东西 ——
+只会用 Qwen 的用户根本没装它们。`transcriber.py` 里的 `faster_whisper` 是延迟导入，
+`qwen_engine._speech_regions()` 的 VAD 也是（拿不到就退化），这两处是范例。
+
+改 Qwen 引擎时才需要独立环境（约 3GB）：
 
 ```bash
 powershell -ExecutionPolicy Bypass -File scripts\setup_qwen.ps1   # Windows
@@ -25,14 +38,15 @@ bash scripts/setup_qwen.sh                                        # macOS / Linu
 以可编辑模式安装（可选，装完可以直接用 `video2context` 命令）：
 
 ```bash
-pip install -e .
+pip install -e .                     # 只装公共依赖
+pip install -e ".[whisper]"          # 想同时装 Whisper 引擎
 video2context doctor
 ```
 
 ## 2. 测试策略
 
 ```bash
-python -m unittest discover -s tests -v   # 87 项，约 2 秒
+python -m unittest discover -s tests -v   # 94 项，约 2 秒
 pytest                                      # 同样的用例（pyproject 已配好）
 ```
 
@@ -43,7 +57,7 @@ pytest                                      # 同样的用例（pyproject 已配
 | `tests/test_units.py` | 时间戳格式化、SRT/VTT/TXT 序列化、参数解析、OOM 判定、ffmpeg 探测与抽音轨 | ffmpeg（自动跳过） |
 | `tests/test_pipeline.py` | 完整流水线：JSON schema、四种输出格式、命名避让、临时音频清理、错误路径 | ffmpeg |
 | `tests/test_glossary.py` | 词表解析、prompt/context 拼装、符号命中评分、回退判定 | 无 |
-| `tests/test_qwen_engine.py` | Qwen 引擎：语种归一化、时间戳→下标映射、**切句**、无对齐模型时的比例分配、引擎选择、解释器探测 | 无 |
+| `tests/test_qwen_engine.py` | Qwen 引擎：语种归一化、时间戳→下标映射、**切句**、无对齐模型时的比例分配、引擎选择与默认引擎解析、解释器探测 | 无 |
 | `tests/media_factory.py` | 用 ffmpeg lavfi 现场合成测试视频/音频 | ffmpeg |
 
 三个关键手法：
@@ -64,9 +78,11 @@ segs = group_time_stamps("Hello world. This is, a test!", EN_STAMPS)   # token �
 assert [s.text for s in segs] == ["Hello world.", "This is, a test!"]
 ```
 
-> 注意打补丁的位置是 `video2context.pipeline.get_transcriber`（导入到使用处的名字），
-> 不是 `video2context.transcriber.get_transcriber`。
-> Qwen 引擎同理：要拦的是 `video2context.pipeline.build_transcriber`。
+> 注意打补丁的位置是 `video2context.pipeline.build_transcriber`（**引擎工厂**），
+> 不是某个具体引擎的 `get_transcriber` ——
+> 默认引擎会按"本机装了哪个引擎"自适应，只替换 `get_transcriber` 的话，
+> 在装了 `.venv-qwen` 的开发机上会真的去起 Qwen 子进程，测试直接卡死（踩过）。
+> 同理，凡是断言"引擎行为"的用例都要**显式指定** `TranscribeOptions(engine=...)`。
 
 ## 3. 代码结构
 
@@ -190,17 +206,22 @@ python -m video2context doctor              # 环境自检正常
 
 ## 7. CI
 
-`.github/workflows/ci.yml` 做三件事：
+`.github/workflows/ci.yml` 做四件事：
 
 - **test**：矩阵 `ubuntu(3.9, 3.13) / windows(3.11) / macos(3.11)`，
-  装 `requirements.txt`（不含 gradio、CUDA 库与 Qwen 的 torch）后跑全部单元测试 + `doctor`；
+  装 `requirements-dev.txt`（只有公共依赖 + Whisper，**不含 torch**）后
+  跑全部单元测试 + `doctor`；
 - **lint**：`ruff check`、`check_docs.py`、`check_secrets.py`；
 - **PowerShell 编码校验**：`scripts/*.ps1` 必须以 **UTF-8 BOM** 开头
   （Windows PowerShell 5.1 会按 GBK 解析无 BOM 的 UTF-8，中文会被截断），并检查语法。
-  **新增 `.ps1` 记得同时加进这个列表**。
+  **新增 `.ps1` 记得同时加进这个列表**；
+- **shell 脚本校验**：`bash -n` + `shellcheck -S error`。
+  部署脚本是很多人接触本工程的第一步，语法错误必须在这里拦住
+  （完整跑一遍会下 3GB 的 torch，不适合放进 CI）。
 
 CI 里**不需要**显卡、模型或 API Key —— 这正是测试设计成"离线替身"的收益。
-Qwen 引擎的测试同样不碰 torch：切句与分配都是纯函数。
+也**不需要** `.venv-qwen`：Qwen 引擎的测试同样不碰 torch，切句与分配都是纯函数；
+而凡是要断言引擎行为的用例都显式指定了引擎，不受"本机装了哪个"影响。
 
 ## 8. 代码风格
 

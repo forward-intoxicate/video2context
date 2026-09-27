@@ -1,0 +1,364 @@
+# 从 0 部署与使用
+
+本文是**部署手册**：从一台干净机器到能跑出第一条字幕，逐步说明不同设备该走哪条路。
+想先了解工程是干什么的，看 [README](../README.md)；想改代码，看 [development.md](development.md)。
+
+---
+
+## 0. 先选路线
+
+工程带**两个识别引擎**，都通过 `--engine` 切换，输出格式完全一致：
+
+| 引擎 | 一句话 | 需要装什么 |
+|---|---|---|
+| **`qwen3-asr`**（默认，推荐） | 中文同音词/数学符号明显更准、英文 WER 更低 | 独立环境 `.venv-qwen`（torch，约 3GB）+ 模型 4GB |
+| `faster-whisper` | 轻量、不需要 torch、CPU 也能跑 | 主环境里一个 pip 包 + 模型 3.1GB |
+
+**两者互不依赖**：可以只装 Qwen、完全不装 Whisper。按下面三条路线挑一条：
+
+| 路线 | 适合谁 | 磁盘 | 命令 |
+|---|---|---|---|
+| **A. 只装 Qwen3-ASR** | 有 NVIDIA 显卡，要最好的中文效果 | ~9GB | `setup.ps1`（默认） / `setup.sh`（默认） |
+| **B. 只装 Whisper** | 没有显卡、或者想省 3GB 的 torch | ~4GB | `setup.ps1 -Engine whisper` / `setup.sh whisper` |
+| **C. 两个都装** | 想 A/B 对比，或不确定 | ~13GB | `setup.ps1 -Engine both` / `setup.sh both` |
+
+> 装哪个引擎，默认就用哪个 —— 程序会自己探测（见[第 6 节](#6-引擎选择与切换)）。
+> 所以路线 B 的用户不用记着加 `--engine faster-whisper`。
+
+### 硬件要求
+
+| | 只装 Qwen | 只装 Whisper |
+|---|---|---|
+| 系统 | Windows 10/11、Linux、macOS | 同左 |
+| Python | **3.9 ~ 3.13** | 同左（网页界面需 3.10+） |
+| 显卡 | **NVIDIA，显存 ≥ 6GB**（推荐 8GB） | 可选，没有就用 CPU |
+| 系统内存 | **16GB 起**（加载模型时要约 13GB 提交内存） | 8GB 够 |
+| 磁盘 | ~9GB（环境 3GB + 模型 6GB） | ~4GB（依赖 0.9GB + 模型 3.1GB） |
+
+**关于内存**（只装 Qwen 时最容易踩的坑）：`transformers` 加载权重时会把 4GB 的分片
+整个读进 CPU 内存再搬上显卡，所以峰值提交内存约 13GB。16GB 内存的机器上，
+如果浏览器开着几十个标签，就会报 `页面文件太小` 或直接崩。
+两个解法：关掉占内存的程序，或者加 `--qwen-low-mem on`（分片直接进显存，CPU 侧几乎不占内存）。
+
+**没有 NVIDIA 显卡能用 Qwen 吗？** 能，但**比实时还慢**：实测 12 秒音频要跑 23.9 秒
+（约 0.5 倍实时，1 小时视频要等 2 小时），只适合偶尔跑一小段。没有显卡请走路线 B。
+
+---
+
+## 1. 通用前置
+
+```bash
+git clone https://github.com/forward-intoxicate/video2context.git
+cd video2context
+```
+
+只需要 **Python 3.9+** 和 **git**。
+
+> **不需要单独安装 ffmpeg**：依赖里的 `imageio-ffmpeg` 自带静态 ffmpeg 可执行文件。
+> 想用系统 ffmpeg 的话，设环境变量 `FFMPEG_BIN=<ffmpeg 完整路径>` 即可。
+
+---
+
+## 2. 路线 A：只部署 Qwen3-ASR（默认，推荐）
+
+这一条路**不安装 Whisper**：主环境只有一个 ffmpeg 包，识别全部跑在独立的 `.venv-qwen` 里。
+
+### Windows（有 NVIDIA 显卡）
+
+```powershell
+# 默认就是 qwen；-Torch cu126 对应 CUDA 12.x 驱动
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
+
+# 顺手把模型也下好（约 6GB，可断点续传，中途 Ctrl+C 下次接着下）
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -DownloadModels
+```
+
+### Windows（没有 N 卡 / 只想先跑通流程）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Torch cpu
+```
+
+### macOS / Linux
+
+```bash
+bash scripts/setup.sh                      # 默认 qwen + cu126
+TORCH_INDEX=cpu bash scripts/setup.sh      # macOS 一律用 cpu
+DOWNLOAD_MODELS=1 bash scripts/setup.sh    # 连模型一起下
+```
+
+> **macOS 说明**：Apple Silicon 上 PyTorch 的 MPS 后端本工程还没有接（走的是 `device_map`），
+> 目前按 CPU 跑。能用，但慢，建议只在短音频上用。
+
+### 这个脚本做了什么
+
+1. 建主环境 `.venv`，只装 `requirements-base.txt`（= `imageio-ffmpeg`）；
+2. 建独立环境 `.venv-qwen`，用 PyTorch 官方索引装对应 CUDA 版本的 torch；
+3. 装 `requirements-qwen.txt`（`qwen-asr` + `transformers==4.57.6` 等）；
+4. 跑一次自检，打印解释器 / 模型 / 对齐模型是否就绪。
+
+也可以只跑 Qwen 那部分（效果完全一样，脚本自己会把主环境补上）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup_qwen.ps1 -DownloadModels
+```
+```bash
+DOWNLOAD_MODELS=1 bash scripts/setup_qwen.sh
+```
+
+---
+
+## 3. 路线 B：只部署 Whisper
+
+不装 torch，磁盘占用最小，没有显卡也能跑。
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Engine whisper -DownloadModels
+```
+```bash
+# macOS / Linux
+DOWNLOAD_MODELS=1 bash scripts/setup.sh whisper
+```
+
+手工装也行：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -U pip
+.\.venv\Scripts\python -m pip install -r requirements.txt          # base + faster-whisper
+.\.venv\Scripts\python -m pip install -r requirements-gpu-win.txt  # Windows + N 卡才需要
+.\.venv\Scripts\python -m video2context doctor
+```
+
+Linux 上 ctranslate2 还需要系统级 CUDA 12 与 cuDNN 9：
+
+```bash
+sudo apt install libcublas-12-* libcudnn9-cuda-12    # Ubuntu 示例
+```
+
+---
+
+## 4. 路线 C：两个都装
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Engine both -DownloadModels
+```
+```bash
+DOWNLOAD_MODELS=1 bash scripts/setup.sh both
+```
+
+两个引擎都可用时，默认走 **Qwen**（效果更好），随时用 `--engine faster-whisper` 换回来。
+适合想在同一条视频上对比两种结果的情况：
+
+```powershell
+python -m video2context 课程.mp4 -f json,srt -n 课程-whisper --engine faster-whisper
+python -m video2context 课程.mp4 -f json,srt -n 课程-qwen
+```
+
+---
+
+## 5. 模型怎么下（三条路都要）
+
+模型**不在仓库里**，第一次运行会自动下载。网络不稳时建议用自带的**分块 + 断点续传**下载器，
+它支持 HuggingFace 与魔搭（ModelScope，国内通常快 5 倍以上），可以反复跑到下完为止：
+
+```powershell
+# Qwen3-ASR（路线 A / C）
+.\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out models\Qwen3-ASR-1.7B
+.\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out models\Qwen3-ForcedAligner-0.6B
+
+# Whisper（路线 B / C）
+.\.venv\Scripts\python scripts\download_model.py large-v3 --source modelscope --out models\faster-whisper-large-v3
+```
+
+| 模型 | 体积 | 作用 | 能不能不下 |
+|---|---|---|---|
+| `Qwen3-ASR-1.7B` | 4.0GB | 识别主力 | 不能（不想下这么大的话用 `models\Qwen3-ASR-0.6B`，1.6GB） |
+| `Qwen3-ForcedAligner-0.6B` | 1.8GB | 给字幕**精确到词**的时间戳 | **能**，加 `--qwen-aligner off` 即可（时间会变粗） |
+| `faster-whisper-large-v3` | 3.1GB | Whisper 引擎 | 不能 |
+
+`download_model.py` 只用标准库，所以主环境只装了 `imageio-ffmpeg` 也能跑它。
+
+---
+
+## 6. 引擎选择与切换
+
+优先级：**`--engine` 参数 > 环境变量 `V2C_ENGINE`（或 `.env`）> 本机部署了哪个 > 首选 Qwen**。
+
+第三档是关键：**装了什么就用什么**。只装了 Whisper 的机器默认就是 Whisper，
+只装了 Qwen 的机器默认就是 Qwen —— 不需要用户记住自己的部署路线。
+
+```powershell
+python -m video2context doctor                              # 看本机部署了哪些引擎、默认用哪个
+python -m video2context a.mp4 --engine faster-whisper       # 这一次用 Whisper
+```
+
+想把默认固定成某个引擎，在 `.env` 里写一行（`.env` 已在 `.gitignore` 中）：
+
+```ini
+V2C_ENGINE=faster-whisper
+```
+
+---
+
+## 7. 怎么用
+
+下面假设已激活虚拟环境（Windows `.\.venv\Scripts\Activate.ps1`，macOS/Linux `source .venv/bin/activate`）。
+不想激活就把 `python` 换成 `.\.venv\Scripts\python` 或 `./.venv/bin/python`。
+
+### 最常用
+
+```powershell
+# 最简：转写一条视频，出 JSON
+python -m video2context 课程.mp4
+
+# 出字幕（SRT / VTT）和纯文本
+python -m video2context 课程.mp4 -f json,srt,vtt,txt
+
+# 明确指定语言：更快更准，减少小语种幻觉
+python -m video2context 课程.mp4 --language zh
+
+# 批量：一个目录下所有 mp4（模型只加载一次）
+python -m video2context .\videos\*.mp4 -o .\output
+
+# 长视频先试跑前 10 分钟
+python -m video2context long.mp4 --duration 600
+
+# 逐句实时打印
+python -m video2context a.mp4 --stream
+```
+
+结果默认落在 `output\视频名.json`（同名的加 `-1` 避让，或加 `--overwrite` 覆盖）。
+
+### 网页界面（拖拽即用）
+
+```powershell
+python -m video2context webui          # 浏览器打开 http://127.0.0.1:7860
+```
+
+页面左侧上传视频、选**识别引擎**/模型/语种，右侧是实时进度 + 全文 + 分段表格 + JSON 下载。
+默认只监听本机；局域网访问加 `--host 0.0.0.0`（注意页面本身没有鉴权）。
+
+### 在 Python 里调用
+
+```python
+from video2context import process, TranscribeOptions
+
+result = process("课程.mp4", TranscribeOptions(language="zh", formats=("json", "srt")))
+print(result.text)
+print(result.outputs["srt"])
+print(result.payload["asr"]["engine"], result.payload["asr"]["timestamp_source"])
+```
+
+`process()` 是无状态函数（模型由内部缓存管理），可以直接放进任务队列。
+多进程并发时每个进程会各自加载一份模型，显存是叠加的 —— 别一下子开好几个。
+
+### 环境自检
+
+```powershell
+python -m video2context doctor                       # ffmpeg / 依赖 / 显卡 / 部署了哪些引擎
+python -m video2context --engine qwen3-asr --qwen-setup   # 只看 Qwen 那一侧
+```
+
+---
+
+## 8. 各设备上的实测速度
+
+测试机：**i9-13900HX（32 线程）+ RTX 4060 Laptop 8GB + 15.7GB 内存**。
+
+| 引擎 / 模型 | 设备 | 素材 | 推理耗时 | 相对实时 |
+|---|---|---|---|---|
+| Qwen3-ASR-1.7B | GPU bf16 | 中文 73s | 5.8s | **12.5×** |
+| Qwen3-ASR-1.7B | GPU bf16 | 英文 42s | 7.0～8.8s | 4.8～6.0× |
+| Qwen3-ASR-1.7B | **CPU**（32 线程） | 英文 12s | 23.9s | **0.5×**（比实时慢一倍） |
+| faster-whisper large-v3 | GPU float16 + 批量 | 中文 390s | 16～19s | **20～24×** |
+| faster-whisper small | CPU int8 | 中文 390s | 64s | 6.1× |
+
+> 「相对实时」= 处理 1 秒音频要多久的倒数。12.5× 表示 1 小时视频约 5 分钟；
+> 0.5× 表示 1 小时视频要 2 小时。
+> Qwen 还要额外加一次模型加载（GPU 上 6.6～10.9s），音频越长越无所谓。
+> CPU 数据强依赖核数，上表是 32 线程的成绩；4 核笔记本要再慢 3～5 倍。
+> 完整的质量对比（中文同音词、英文 WER）见 [models.md](models.md#6-qwen3-asr默认引擎)。
+
+---
+
+## 9. 离线部署（内网机器 / 不能联网）
+
+在**有网**的机器上把环境和模型都准备好，然后整目录拷过去：
+
+```powershell
+# 有网机器：装依赖 + 下模型（都在工程目录内）
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Engine both -DownloadModels
+
+# 额外把 pip 包也导出成离线 wheels（可选，目标机器不能连 pip 源时用）
+.\.venv\Scripts\python -m pip download -r requirements.txt -r requirements-web.txt -d wheels
+.\.venv-qwen\Scripts\python -m pip download -r requirements-qwen.txt -d wheels-qwen
+```
+
+把整个工程目录（含 `.venv`、`.venv-qwen`、`models`、`wheels*`）拷到目标机器，然后：
+
+```powershell
+# 目标机器：路径变了要重建虚拟环境（venv 里写死了绝对路径）
+python -m venv .venv
+.\.venv\Scripts\python -m pip install --no-index --find-links wheels -r requirements.txt
+python -m venv --without-pip .venv-qwen
+python -m pip --python .\.venv-qwen\Scripts\python.exe install --no-index --find-links wheels-qwen -r requirements-qwen.txt
+
+# 让程序只用本地缓存、不联网
+$env:HF_HUB_OFFLINE = "1"
+.\.venv\Scripts\python -m video2context 视频.mp4
+```
+
+**只想搬模型**（依赖能连网）时更简单：把 `models\` 整个目录拷过去即可，
+程序会优先用工程内的本地模型目录。
+
+---
+
+## 10. 国内网络加速
+
+```powershell
+# pip 走清华源（安装脚本已经默认带上了 -i 参数）
+.\.venv\Scripts\python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 模型走魔搭（比 HuggingFace 快很多，支持断点续传）
+.\.venv\Scripts\python scripts\download_model.py large-v3 --source modelscope
+```
+
+代码里默认关掉了 HuggingFace 的 Xet 存储（弱网下会长时间挂起）；
+需要时可以设 `HF_HUB_DISABLE_XET=0` 打开。
+
+---
+
+## 11. 磁盘占用与卸载
+
+| 内容 | 体积 | 怎么删 |
+|---|---|---|
+| 主环境 `.venv` | 0.9GB（路线 B 含 Whisper）/ 0.05GB（只装 Qwen） | 直接删目录 |
+| Qwen 环境 `.venv-qwen` | 约 3GB | 直接删目录 |
+| Qwen 模型 | 4.0GB + 对齐模型 1.8GB | 删 `models\` 下对应目录 |
+| Whisper 模型 | 3.1GB | 删 `models\faster-whisper-large-v3` |
+| HuggingFace 缓存 | 视情况 | `%USERPROFILE%\.cache\huggingface`（可用 `HF_HOME` 改位置） |
+| 输出与临时文件 | 视情况 | `output\`；转写时的临时 wav 会自动清理 |
+
+用 `--model-dir` 指定的本地模型目录可以随时删，程序不会自动往那里写东西。
+
+---
+
+## 12. 部署出问题？
+
+先跑自检，它会把"缺哪一环"直接打出来：
+
+```powershell
+python -m video2context doctor
+```
+
+| 症状 | 去哪看 |
+|---|---|
+| `找不到 Qwen3-ASR 的独立环境（.venv-qwen）` | [troubleshooting 7.1](troubleshooting.md#71-找不到-qwen3-asr-的独立环境venv-qwen) |
+| `页面文件太小` / `CUDA out of memory` | [troubleshooting 7.2](troubleshooting.md#72-页面文件太小无法完成操作--cuda-out-of-memory--0xc0000005) |
+| Qwen 跑得很慢 / 自检显示 `cuda False` | [troubleshooting 7.3](troubleshooting.md#73-环境自检显示-设备cpu--速度特别慢)（多半是 torch 装成了 CPU 版） |
+| 字幕时间戳不准 | [troubleshooting 7.4](troubleshooting.md#74-字幕时间戳不准--所有段落挤在一起) |
+| 模型下载卡住 / 很慢 | [troubleshooting 3.1](troubleshooting.md#31-下载卡住进度条不动) |
+| 网页界面打不开 | [troubleshooting 6.3](troubleshooting.md#63-网页界面打不开--端口被占用) |
+| 其它（安装、ffmpeg、显卡、识别质量） | [troubleshooting.md](troubleshooting.md) 全文 |

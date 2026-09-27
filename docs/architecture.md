@@ -199,20 +199,22 @@ CLI 用它画进度条和 `--stream` 逐句输出，Web UI 用它更新 Gradio �
 #### 为什么走子进程
 
 Qwen3-ASR 需要 `torch + transformers`，而主工程**刻意不装 torch**：
-faster-whisper 走 CTranslate2/ONNX 路线，两者塞进同一个环境会互相牵制版本
+Whisper 引擎走 CTranslate2/ONNX 路线，两者塞进同一个环境会互相牵制版本
 （`transformers` 对 `torch` 版本很敏感）。所以拆成两个环境：
 
 ```
 主环境 .venv                          独立环境 .venv-qwen
-├─ faster-whisper / ctranslate2       ├─ torch（按显卡选 cu126 / cpu）
-├─ imageio-ffmpeg                     ├─ transformers==4.57.6
+├─ imageio-ffmpeg（公共依赖）          ├─ torch（按显卡选 cu126 / cpu）
+├─ faster-whisper（可选的另一个引擎）   ├─ transformers==4.57.6
 ├─ gradio（可选）                      └─ qwen-asr==0.0.6
 └─ qwen_engine.py ──subprocess──────▶ _qwen_worker.py ──▶ result.json
    （探测/调度/切句）                    （只做推理，不 import 主工程）
 ```
 
-收益：主环境永远轻量（没显卡也能装、CI 里不用下 3GB torch）；
-代价：每次转写多付一次模型加载（实测 6.6～10.9s），音频越长越无所谓。
+这个分层带来一个直接好处：**两个引擎可以只装一个**。
+主环境的公共依赖只有 `imageio-ffmpeg`（`requirements-base.txt`），
+Whisper 和 Qwen 各自是可选的一层（见 [deploy.md](deploy.md)）。
+代价是每次转写多付一次模型加载（实测 6.6～10.9s），音频越长越无所谓。
 
 #### 数据契约
 
@@ -257,18 +259,30 @@ faster-whisper 走 CTranslate2/ONNX 路线，两者塞进同一个环境会互�
 
 ### 4.9 引擎选择与词表提示的差异
 
-`pipeline.build_transcriber()` 按引擎造识别器，两个引擎的
+`pipeline.build_transcriber()` 是**唯一的引擎工厂**：按引擎造识别器，两个引擎的
 `.transcribe()` 签名与返回值一致（都返回 `TranscriptionResult`），所以
 流水线后面（写文件、进度条、JSON 组装）完全不用区分引擎。
 
-引擎本身由 `resolve_engine()` 决定，优先级是
-**`--engine` 参数 > 环境变量/`.env` 里的 `V2C_ENGINE` > `faster-whisper`**。
-`TranscribeOptions.engine` 的默认值是**空串**（表示"未指定"），
-这样才能区分"用户明确要求 faster-whisper"和"用户没提，去问配置"。
+引擎由 `resolve_engine()` 决定，四档优先级：
 
-> 出厂默认**故意保留** faster-whisper：新克隆的仓库只有主环境（torch-free），
-> 默认成 Qwen 会让"装完就能用"直接失败。想在自己机器上默认用 Qwen，
-> 写一行 `V2C_ENGINE=qwen3-asr` 即可 —— 默认值应该留给零额外依赖的那条路。
+```
+--engine 参数  >  V2C_ENGINE（环境变量 / .env）  >  本机可用的引擎  >  首选 qwen3-asr
+                                                        ↑
+                              available_engines()：.venv-qwen 在不在？装了 faster_whisper 吗？
+```
+
+**第三档「按部署情况自适应」是这套设计的关键**：只装了 Whisper 的机器默认用 Whisper，
+只装了 Qwen 的默认用 Qwen，两个都装则按 `ENGINE_PREFERENCE`（Qwen 优先）。
+收益是三条部署路线（只装 Qwen / 只装 Whisper / 都装）装完都能直接敲命令就跑，
+用户不需要记住自己装了什么；代价是"默认引擎"变成一个运行时概念，
+所以 `doctor` 会明确打印**实际会用哪个引擎、以及为什么**。
+
+实现上有个坑值得记一笔：`TranscribeOptions.engine` 的默认值是**空串**（表示"未指定"），
+因为 `normalize_engine("")` 会返回首选引擎（非空），
+直接写 `if normalize_engine(configured_engine()):` 会让第三档永远轮不到 —— 这个 bug 被单测抓到过。
+
+> 出厂首选**是** Qwen。但如果两个引擎都没装，程序不会硬着头皮跑，
+> 而是在 preflight 阶段直接给出对应的安装命令。
 
 `--model` 的默认值是 Whisper 的 `large-v3`；切到 Qwen 引擎时它显然不是用户本意，
 会被当作"未指定"，改用 Qwen 的默认模型（本地 `models/Qwen3-ASR-1.7B`，否则仓库名）。

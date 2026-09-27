@@ -399,15 +399,28 @@ def _wrap_long_piece(piece: str) -> list[str]:
 
 
 def _speech_regions(audio_path: Path, log: LogCallback) -> list[tuple[float, float]]:
-    """用 faster-whisper 自带的 Silero VAD 找说话区间（失败则返回空表）。
+    """用 faster-whisper 自带的 Silero VAD 找说话区间（不可用则返回空表）。
 
     没有强制对齐模型时，靠这些区间把句子按字数比例放到"真的有人在说"的地方，
     总比平均铺满整条时间轴靠谱。
+
+    这个能力**依赖 faster-whisper**（VAD 与音频解码都在它里面）。只部署 Qwen 的机器
+    没有它，于是退化成"按总时长平均分配" —— 能用，但时间更粗。所以这里把原因说清楚，
+    并指向真正的解法（装对齐模型），而不是丢一句 `ModuleNotFoundError` 让人以为坏了。
     """
     try:
-        import numpy as np
         from faster_whisper.audio import decode_audio
         from faster_whisper.vad import VadOptions, get_speech_timestamps
+    except ImportError:
+        log(
+            "      未安装 faster-whisper，拿不到说话区间（只部署 Qwen 时属正常）"
+            "→ 句子时间按总时长平均分配；"
+            "想要精确字幕时间请装对齐模型 Qwen3-ForcedAligner-0.6B，见 docs/deploy.md"
+        )
+        return []
+
+    try:
+        import numpy as np
 
         audio = decode_audio(str(audio_path), sampling_rate=16000)
         stamps = get_speech_timestamps(
@@ -423,7 +436,7 @@ def _speech_regions(audio_path: Path, log: LogCallback) -> list[tuple[float, flo
         del audio, np  # 尽早释放
         return regions
     except Exception as exc:
-        log(f"      VAD 不可用（{type(exc).__name__}: {exc}），时间戳将按总时长平均分配")
+        log(f"      VAD 不可用（{type(exc).__name__}: {exc}），句子时间将按总时长平均分配")
         return []
 
 
