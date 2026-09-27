@@ -1,0 +1,22 @@
+# Qwen3-ASR 引擎的独立环境依赖
+#
+# 装在工程内的 .venv-qwen 里，**不要**装进主 .venv：
+# 主工程刻意保持 torch-free（faster-whisper 走 CTranslate2，不需要 torch），
+# 两者混装会互相牵制版本。主工程通过子进程桥接调用这个环境，
+# 详见 docs/architecture.md「Qwen3-ASR 为什么走子进程」。
+#
+# 推荐用安装脚本一次装好（它还会按显卡选对 torch 的 CUDA 版本）：
+#     powershell -ExecutionPolicy Bypass -File scripts/setup_qwen.ps1
+#
+# torch 故意**不写在本文件里**：它必须按显卡/系统选 wheel（cu126 / cpu），
+# 由安装脚本用 --index-url 单独安装，例如：
+#     pip install torch --index-url https://download.pytorch.org/whl/cu126
+#
+# 版本是实测通过的组合（见 docs/models.md 的实测数据）。
+
+qwen-asr==0.0.6
+transformers==4.57.6
+accelerate>=1.0
+safetensors>=0.4
+soundfile>=0.12
+librosa>=0.10

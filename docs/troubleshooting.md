@@ -229,7 +229,8 @@ python -m video2context 讲座.mp4 --initial-prompt "涉及概念：卷积神经
 
 - `tiny`/`base` 模型会输出**繁体**且错字多 —— 这不是 bug，换 `large-v3` 即可，实测输出简体；
 - `large-v3` 的标点是模型行为，句子之间偶尔缺句号属正常；
-- 对中文标点要求高 → 换 FunASR/SenseVoice（带独立标点模型），见 [models.md](models.md)。
+- 对中文标点要求高 → 换 `--engine qwen3-asr`（标点明显更完整，见 [models.md](models.md)），
+  或换 FunASR/SenseVoice（带独立标点模型）。
 
 ### 4.4 时间戳偏移 / 对不上画面
 
@@ -302,7 +303,127 @@ print(result.text)
 print(result.outputs["srt"])
 ```
 
+换 Qwen 引擎只是多两个字段（需要时先跑 `scripts/setup_qwen.ps1`）：
+
+```python
+from video2context import process, TranscribeOptions
+
+result = process(
+    "课程.mp4",
+    TranscribeOptions(engine="qwen3-asr", language="zh", formats=("json", "srt")),
+)
+print(result.payload["asr"]["engine"])            # qwen3-asr
+print(result.payload["asr"]["timestamp_source"])  # forced-aligner / vad-proportional
+```
+
 ### 6.5 想接进自己的流水线 / 队列
 
 `process()` 是无状态纯函数（模型除外，由内部缓存管理），可以直接在任务队列里调用。
 多进程并发时请注意：每个进程都会各自加载一份模型，显存是叠加的。
+
+---
+
+## 7. Qwen3-ASR 引擎（`--engine qwen3-asr`）
+
+先跑自检，它会告诉你缺哪一环：
+
+```powershell
+.\.venv\Scripts\python -m video2context --engine qwen3-asr --qwen-setup
+```
+
+### 7.1 `找不到 Qwen3-ASR 的独立环境（.venv-qwen）`
+
+主环境**故意不装 torch**（faster-whisper 走 CTranslate2），所以 Qwen 要单独一个环境：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup_qwen.ps1
+```
+
+已有别的环境装了 `qwen-asr`？把它写进环境变量即可，不用新建：
+
+```powershell
+$env:V2C_QWEN_PYTHON = "D:\envs\qwen\Scripts\python.exe"
+# 或者每次指定
+python -m video2context a.mp4 --engine qwen3-asr --qwen-python "D:\envs\qwen\Scripts\python.exe"
+```
+
+> 明确指定了解释器却不存在时，程序**不会**偷偷回退到 `.venv-qwen`，而是直接报出你给的那个路径 —— 免得你以为指定的生效了。
+
+### 7.2 `页面文件太小，无法完成操作` / `CUDA out of memory` / `0xC0000005`
+
+三种报错根因常常是同一个：**提交内存（commit）不够**。
+1.7B 的第一个 safetensors 分片有 4GB，`transformers` 默认会把它**整个读进 CPU 内存**
+再搬到显存，所以峰值提交内存约 13GB —— 8GB 显存的卡 + 16GB 内存的机器很容易踩到。
+
+按顺序试：
+
+```powershell
+# 1) 低内存加载：meta 设备建空模型，分片直接读进显存，CPU 侧几乎不占内存
+python -m video2context a.mp4 --engine qwen3-asr --qwen-low-mem on
+
+# 2) 关掉吃内存的常驻程序（浏览器多标签、网盘、QQ、游戏、另一个转写任务）
+
+# 3) 换小模型
+python -m video2context a.mp4 --engine qwen3-asr -m models\Qwen3-ASR-0.6B
+```
+
+`0xC0000005`（访问冲突）通常是一次内存不足之后的连带后果，**重启机器后重试**最有效。
+另外 `pip cache purge` 能释放 C 盘空间 —— 页面文件放在快满的 C 盘上会更容易失败。
+
+### 7.3 环境自检显示 `设备=cpu` / 速度特别慢
+
+多半是 `torch` 装成了 CPU 版。PyPI 上 `pip install torch` 默认给的是 `+cpu` 构建，
+必须走 PyTorch 官方索引：
+
+```powershell
+.\.venv-qwen\Scripts\python -m pip install torch --index-url https://download.pytorch.org/whl/cu126
+.\.venv-qwen\Scripts\python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+# 期望看到 2.x.x+cu126 与 True
+```
+
+重装脚本可以直接带参数：`scripts\setup_qwen.ps1 -Torch cu126`（没显卡用 `-Torch cpu`）。
+
+### 7.4 字幕时间戳不准 / 所有段落挤在一起
+
+看结果 JSON 里的 `asr.timestamp_source`：
+
+| 值 | 含义 | 处理 |
+|---|---|---|
+| `forced-aligner` | 词级时间戳，精确 | 无需处理 |
+| `vad-proportional` | 按说话区间**估算**的时间 | 补下对齐模型（1.8GB） |
+| `none` | 没切出分段 | 识别结果为空，检查音频是否有声音 |
+
+```powershell
+.\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out models\Qwen3-ForcedAligner-0.6B
+```
+
+对齐模型默认自动探测 `models\Qwen3-ForcedAligner-0.6B`；放别处就用 `--qwen-aligner <目录>`。
+想省磁盘干脆关掉：`--qwen-aligner off`。
+
+### 7.5 用了 `--glossary` 但同音词没被修
+
+这是**已知的实测结论，不是 bug**：Qwen3-ASR 的 `context`（system message）在
+`qwen-asr==0.0.6` + 1.7B 上对结果没有可观测影响 —— 换成完全无关的内容，输出逐字相同。
+链路本身是通的（渲染出的 prompt 里 system 消息确实存在），只是模型没吃这个信息。
+
+怎么办：
+
+* 同音词修正请用**默认引擎**：`--engine faster-whisper --glossary terms.txt`（实测有效）；
+* 或者做**后处理改写**：Qwen 的错法很规则（「x 零」→ `x0`、「u1 x」→ `u1(x)`），
+  一次正则替换就能覆盖，且不需要模型；
+* 词表在 Qwen 引擎下仍会写进结果 JSON，方便你拿去写改写规则。
+
+详见 [models.md 第 6.4 节](models.md#64-实测context词表偏置没有效果)。
+
+### 7.6 `--task translate` 报错
+
+Qwen3-ASR 只做原语言转写，不做翻译。需要英文翻译请用默认引擎：
+`--engine faster-whisper --task translate`。
+
+### 7.7 每次转写都要等模型加载
+
+是的，这是子进程方案的固有代价（实测 6.6～10.9 秒）。三点缓解：
+
+* 音频越长越无所谓（73 秒素材推理只要 5.8 秒，加载占了大头）；
+* 批量转写用**一次调用传多个文件**，比逐个起进程省事（但 Qwen 引擎目前仍会按文件各起一次子进程）；
+* 短音频试参数时先加 `--duration 120` 跑片段。

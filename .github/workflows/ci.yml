@@ -45,7 +45,7 @@ jobs:
         shell: pwsh
         run: |
           $failed = $false
-          foreach ($file in @("scripts/setup.ps1", "scripts/run_web.ps1")) {
+          foreach ($file in @("scripts/setup.ps1", "scripts/setup_qwen.ps1", "scripts/run_web.ps1")) {
             $bytes = [System.IO.File]::ReadAllBytes($file)
             if (-not ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) {
               Write-Host "::error file=$file::缺少 UTF-8 BOM，Windows PowerShell 5.1 下中文会乱码"

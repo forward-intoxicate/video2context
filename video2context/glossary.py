@@ -132,6 +132,34 @@ class Glossary:
             prompt = prompt[: max_chars - 1].rstrip("、。") + "。"
         return prompt
 
+    def to_context(self, *, max_terms: int = 12) -> str:
+        """拼成 Qwen3-ASR 的 ``context``（作为 system message 注入）。
+
+        这里和 :meth:`to_prompt` 的差别**来自实测**，不是随意改的：
+
+        * Qwen3-ASR 的 ``context`` 走 system message，**指令式**的短词表
+          （例如「请准确识别以下术语与符号：u(x)、v(x)。」）会让模型直接**复述
+          context** 而不是转写音频；
+        * 换成**描述"这段视频里有什么"的完整句子**（相当于把板书内容写进去）后，
+          模型会正常转写，并且 ``u1x`` 之类的错写会修正成 ``u1(x)``。
+
+        所以这里刻意不写"请识别/请注意"这类祈使句，只陈述内容。
+        """
+        sentences: list[str] = []
+        domain = (self.domain or "").strip().rstrip("。.")
+        if domain:
+            sentences.append(f"这段视频在讲{domain}。")
+
+        symbols = list(dict.fromkeys(s.right for s in self.symbols if s.right))[:MAX_SYMBOLS]
+        if symbols:
+            sentences.append("视频里写出的公式和符号有" + "、".join(symbols) + "。")
+
+        terms = list(dict.fromkeys(t for t in self.terms if t))[:max_terms]
+        if terms:
+            sentences.append("讲到的术语包括" + "、".join(terms) + "。")
+
+        return "".join(sentences)
+
     # ------------------------------------------------------------------ 序列化
 
     def to_dict(self) -> dict[str, Any]:
@@ -141,6 +169,7 @@ class Glossary:
             "symbols": [s.to_dict() for s in self.symbols],
             "terms": list(self.terms),
             "prompt": self.to_prompt(),
+            "context": self.to_context(),
         }
         if self.scan:
             data["scan"] = self.scan
@@ -159,6 +188,9 @@ class Glossary:
         if self.terms:
             lines.append("术语: " + "、".join(self.terms))
         lines.append(f"拼成 prompt（{len(self.to_prompt())} 字）: {self.to_prompt()}")
+        context = self.to_context()
+        if context:
+            lines.append(f"拼成 Qwen context（{len(context)} 字）: {context}")
         return "\n".join(lines)
 
     # ------------------------------------------------------------------ 构造

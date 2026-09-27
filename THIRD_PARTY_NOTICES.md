@@ -17,6 +17,17 @@
 | [Gradio](https://github.com/gradio-app/gradio) | 网页界面（可选） | Apache-2.0 |
 | [NumPy](https://github.com/numpy/numpy) | 数值计算（间接依赖） | BSD-3-Clause |
 
+### 可选引擎 Qwen3-ASR 的依赖（装在独立的 `.venv-qwen`，不装也能用）
+
+| 组件 | 用途 | 许可证 |
+|---|---|---|
+| [qwen-asr](https://pypi.org/project/qwen-asr/) | Qwen3-ASR 官方推理封装 | Apache-2.0 |
+| [PyTorch](https://github.com/pytorch/pytorch) | 深度学习运行时 | BSD-3-Clause |
+| [Transformers](https://github.com/huggingface/transformers) | 模型加载与生成 | Apache-2.0 |
+
+平时不装这一套；只有使用 `--engine qwen3-asr` 时才需要，
+详见 [README](README.md#可选装-qwen3-asr-引擎)。
+
 ## 2. ffmpeg
 
 `imageio-ffmpeg` 分发的 ffmpeg 静态构建来自 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/)，
@@ -30,6 +41,8 @@
 | Whisper（默认 `large-v3` 等） | OpenAI 训练并开源 | MIT |
 | faster-whisper 的 CTranslate2 转换版 | HuggingFace `Systran/faster-whisper-*` 等仓库 | MIT（转换版沿用原模型许可） |
 | Silero VAD v6 | 随 faster-whisper 包分发（`silero_vad_v6.onnx`） | MIT |
+| [Qwen3-ASR-1.7B / 0.6B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B)（可选引擎） | 阿里通义千问团队 | **Apache-2.0** |
+| [Qwen3-ForcedAligner-0.6B](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B)（可选，字幕时间戳） | 阿里通义千问团队 | **Apache-2.0** |
 
 使用模型前请自行确认其许可证与你的使用场景相符（尤其是商用场景）。
 

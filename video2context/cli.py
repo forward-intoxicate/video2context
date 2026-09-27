@@ -14,7 +14,15 @@ from . import __version__
 from .config import llm_settings
 from .ffmpeg_tools import format_hms, format_hms_ms
 from .glossary import Glossary
-from .pipeline import TranscribeOptions, process, scan_and_build_glossary
+from .pipeline import (
+    ENGINE_CHOICES,
+    ENGINE_FASTER_WHISPER,
+    TranscribeOptions,
+    is_qwen_engine,
+    normalize_engine,
+    process,
+    scan_and_build_glossary,
+)
 from .transcriber import DEFAULT_MODEL, RECOMMENDED_MODELS
 from .writers import SUPPORTED_FORMATS, parse_formats
 
@@ -34,6 +42,12 @@ EPILOG = """\
 
   # 只转写前 10 分钟（配音/长视频试跑）
   python -m video2context long.mp4 --duration 600
+
+  # 用 Qwen3-ASR 引擎（中文同音词、数学符号更准；需要先跑 scripts/setup_qwen.ps1）
+  python -m video2context 课程.mp4 --engine qwen3-asr --language zh -f json,srt
+
+  # 先自检 Qwen3-ASR 环境（解释器 / 模型 / 对齐模型是否就绪）
+  python -m video2context --engine qwen3-asr --qwen-setup
 
   # 打开本地网页界面
   python -m video2context webui
@@ -129,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="转写视频/音频（默认命令）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    t.add_argument("inputs", nargs="+", help="输入文件，可一次给多个")
+    t.add_argument("inputs", nargs="*", help="输入文件，可一次给多个")
 
     out = t.add_argument_group("输出")
     out.add_argument("-o", "--output-dir", default="output", help="输出目录（默认 output）")
@@ -148,10 +162,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     asr = t.add_argument_group("识别")
     asr.add_argument(
+        "--engine",
+        default=ENGINE_FASTER_WHISPER,
+        help=(
+            "识别引擎：faster-whisper（默认，轻量、无需 torch、CPU 也能跑）"
+            "或 qwen3-asr（中文同音词/数学符号明显更准，英文 WER 更低，但需要独立环境与约 4GB 显存）"
+        ),
+    )
+    asr.add_argument(
         "-m",
         "--model",
         default=DEFAULT_MODEL,
-        help=f"模型名或本地模型目录（默认 {DEFAULT_MODEL}；常用：{', '.join(RECOMMENDED_MODELS)}）",
+        help=(
+            f"模型名或本地模型目录。faster-whisper 默认 {DEFAULT_MODEL}"
+            f"（常用：{', '.join(RECOMMENDED_MODELS)}）；"
+            "qwen3-asr 默认自动找 models/Qwen3-ASR-1.7B，找不到则用仓库名 Qwen/Qwen3-ASR-1.7B"
+        ),
     )
     asr.add_argument(
         "-l",
@@ -200,6 +226,45 @@ def build_parser() -> argparse.ArgumentParser:
     clip = t.add_argument_group("裁剪")
     clip.add_argument("--start", type=float, default=None, help="从第几秒开始（默认 0）")
     clip.add_argument("--duration", type=float, default=None, help="只处理多少秒")
+
+    qw = t.add_argument_group("Qwen3-ASR（--engine qwen3-asr 时生效）")
+    qw.add_argument(
+        "--qwen-aligner",
+        default=None,
+        help=(
+            "强制对齐模型目录（默认自动找 models/Qwen3-ForcedAligner-0.6B）。"
+            "它决定 SRT/VTT 的时间戳是否精确；写 off 可关掉（省 1.8GB 磁盘，"
+            "但字幕时间只能按说话区间估算）"
+        ),
+    )
+    qw.add_argument(
+        "--qwen-python",
+        default=None,
+        help="装了 qwen_asr 的解释器路径（默认自动找工程内 .venv-qwen，或读环境变量 V2C_QWEN_PYTHON）",
+    )
+    qw.add_argument(
+        "--qwen-low-mem",
+        choices=["auto", "on", "off"],
+        default="auto",
+        help="auto=常规加载失败再退低内存模式；on=总是用低内存加载（8GB 内存机器推荐）；off=不重试",
+    )
+    qw.add_argument(
+        "--qwen-max-new-tokens",
+        type=int,
+        default=4096,
+        help="单段最多生成多少 token（默认 4096；调小可省显存，调太小会截断长音频）",
+    )
+    qw.add_argument(
+        "--qwen-batch-size",
+        type=int,
+        default=8,
+        help="Qwen 内部一次并行推理多少段（默认 8；显存紧张时调小，最小 1）",
+    )
+    qw.add_argument(
+        "--qwen-setup",
+        action="store_true",
+        help="先打印 Qwen3-ASR 的环境自检（解释器 / 模型 / 对齐模型），不转写",
+    )
 
     gl = t.add_argument_group("领域词表（可选，用于修同音词/专有名词）")
     gl.add_argument(
@@ -271,7 +336,43 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
         print(f"参数错误：--temperature 需要数字或逗号分隔的数字，收到 {args.temperature!r}", file=sys.stderr)
         return 2
 
+    # ---- 引擎校验 -------------------------------------------------------
+    engine = normalize_engine(args.engine)
+    if engine not in ENGINE_CHOICES:
+        print(
+            f"参数错误：不认识的引擎 {args.engine!r}，可选：{', '.join(ENGINE_CHOICES)}",
+            file=sys.stderr,
+        )
+        return 2
+
+    if is_qwen_engine(engine):
+        if args.task != "transcribe":
+            print(
+                "参数错误：Qwen3-ASR 只做原语言转写，不支持 --task translate。\n"
+                "需要翻译成英文请用：--engine faster-whisper --task translate",
+                file=sys.stderr,
+            )
+            return 2
+        if args.qwen_setup:
+            return _cmd_qwen_setup(args)
+    elif args.qwen_setup:
+        print("参数错误：--qwen-setup 需要配合 --engine qwen3-asr 使用", file=sys.stderr)
+        return 2
+
+    if not args.inputs:
+        print("参数错误：至少要给一个输入文件（或用 --engine qwen3-asr --qwen-setup 只做环境自检）", file=sys.stderr)
+        return 2
+
     # ---- 词表相关校验 ---------------------------------------------------
+    if is_qwen_engine(engine) and (args.auto_glossary or args.dry_run_glossary):
+        print(
+            "提示：实测 Qwen3-ASR 的 context 对识别结果没有可观测影响"
+            "（见 docs/models.md），--auto-glossary 目前收益有限。\n"
+            "      词表仍会照常生成并写进结果 JSON，方便人工复核；"
+            "想省掉这次额外开销可以去掉 --auto-glossary。",
+            file=sys.stderr,
+        )
+
     glossary: Optional[Glossary] = None
     if args.glossary:
         try:
@@ -302,6 +403,7 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
             return 2
 
     options = TranscribeOptions(
+        engine=engine,
         model=args.model,
         device=args.device,
         compute_type=args.compute_type,
@@ -333,6 +435,11 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
         verify_glossary=not args.no_verify_glossary,
         llm_base_url=args.llm_base_url,
         llm_model=args.llm_model,
+        qwen_aligner=args.qwen_aligner,
+        qwen_python=args.qwen_python,
+        qwen_low_mem=args.qwen_low_mem,
+        qwen_max_new_tokens=args.qwen_max_new_tokens,
+        qwen_max_batch_size=args.qwen_batch_size,
     )
 
     quiet = args.quiet
@@ -393,6 +500,49 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
             print(result.text)
 
     return 1 if failures else 0
+
+
+def _cmd_qwen_setup(args: argparse.Namespace) -> int:
+    """打印 Qwen3-ASR 的环境自检（不转写），用来定位"跑不起来"的原因。"""
+    from .qwen_engine import QwenAsrEngine, resolve_aligner, resolve_qwen_model
+
+    engine = QwenAsrEngine(
+        model=resolve_qwen_model(args.model if args.model != DEFAULT_MODEL else None),
+        aligner=args.qwen_aligner,
+        python=args.qwen_python,
+        device=args.device,
+        low_mem=args.qwen_low_mem,
+        max_new_tokens=args.qwen_max_new_tokens,
+        max_batch_size=args.qwen_batch_size,
+    )
+    print(f"video2context {__version__} · Qwen3-ASR 环境自检")
+    print(f"  独立环境 python : {engine.python or '未找到（见下方提示）'}")
+    print(f"  工人脚本        : {engine.worker}（存在={engine.worker.is_file()}）")
+    print(f"  识别模型        : {engine.model}")
+
+    model_path = Path(engine.model)
+    if model_path.is_dir():
+        print(f"  模型来源        : 本地目录（config.json={ (model_path / 'config.json').is_file() }）")
+    else:
+        print("  模型来源        : 仓库名 —— 首次运行会联网下载（约 4GB）")
+
+    aligner = resolve_aligner(args.qwen_aligner)
+    print(f"  对齐模型        : {aligner or '已关闭（字幕时间只能估算）'}")
+    if aligner and Path(aligner).is_dir():
+        size_mb = sum(f.stat().st_size for f in Path(aligner).rglob("*") if f.is_file()) / 1_048_576
+        print(f"  对齐模型体积    : {size_mb:.0f} MB")
+    print(f"  低内存模式      : {args.qwen_low_mem}")
+    print(f"  单段最多 token  : {args.qwen_max_new_tokens}")
+    print(f"  内部批大小      : {args.qwen_batch_size}")
+
+    try:
+        engine.preflight()
+    except Exception as exc:
+        print(f"\n[不可用] {exc}", file=sys.stderr)
+        return 1
+    print("\n环境就绪。示例：")
+    print("  python -m video2context 视频.mp4 --engine qwen3-asr --language zh -f json,srt")
+    return 0
 
 
 def _cmd_doctor(_args: argparse.Namespace) -> int:

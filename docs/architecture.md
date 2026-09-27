@@ -19,10 +19,10 @@
        │
        ▼  16kHz 单声道 PCM wav（临时文件，除非 --keep-audio）
    ┌───────────────────┐
-   │ faster-whisper    │ ③ 识别
+   │ 识别引擎（二选一） │ ③ 识别            --engine faster-whisper（默认） / qwen3-asr
    │  ├ Silero VAD v6  │    先按静音切成语音段（vad_filter=True）
-   │  ├ Whisper 编码器 │    每段归一化到 30s 窗口做 mel 频谱 → 编码
-   │  └ Whisper 解码器 │    束搜索解码 → 文本 + 时间戳（+ 温度回退）
+   │  ├ 编码器         │    每段归一化到窗口做 mel 频谱 → 编码
+   │  └ 解码器         │    束搜索解码 → 文本 + 时间戳（+ 温度回退）
    └───────────────────┘
        │
        ▼  生成器：边识别边产出 segment，可实时回调进度
@@ -37,7 +37,9 @@
 |---|---|---|
 | ① 探测 | `ffmpeg_tools.py` | `probe_media()` |
 | ② 抽音轨 | `ffmpeg_tools.py` | `find_ffmpeg()`、`extract_audio()` |
-| ③ 识别 | `transcriber.py` | `Transcriber.load()`、`Transcriber.transcribe()`、`Transcriber._collect()` |
+| ③ 识别（Whisper） | `transcriber.py` | `Transcriber.load()`、`Transcriber.transcribe()`、`Transcriber._collect()` |
+| ③ 识别（Qwen） | `qwen_engine.py` + `_qwen_worker.py` | `QwenAsrEngine.transcribe()`、`group_time_stamps()`、`distribute_sentences()` |
+| 引擎选择 | `pipeline.py` | `build_transcriber()`、`normalize_engine()` |
 | 流程编排 | `pipeline.py` | `process()` |
 | ④ 输出 | `writers.py` | `write_outputs()`、`segments_to_srt()`、`segments_to_vtt()` |
 | 交互 | `cli.py` / `webui.py` | `main()` / `build_demo()` |
@@ -192,6 +194,90 @@ CLI 用它画进度条和 `--stream` 逐句输出，Web UI 用它更新 Gradio �
 批量处理多个文件、网页端连续上传时不会重复加载模型（加载一次要 5～30 秒）。
 换模型时旧实例被替换、显存释放，避免堆满。
 
+### 4.8 Qwen3-ASR 引擎（`--engine qwen3-asr`）
+
+#### 为什么走子进程
+
+Qwen3-ASR 需要 `torch + transformers`，而主工程**刻意不装 torch**：
+faster-whisper 走 CTranslate2/ONNX 路线，两者塞进同一个环境会互相牵制版本
+（`transformers` 对 `torch` 版本很敏感）。所以拆成两个环境：
+
+```
+主环境 .venv                          独立环境 .venv-qwen
+├─ faster-whisper / ctranslate2       ├─ torch（按显卡选 cu126 / cpu）
+├─ imageio-ffmpeg                     ├─ transformers==4.57.6
+├─ gradio（可选）                      └─ qwen-asr==0.0.6
+└─ qwen_engine.py ──subprocess──────▶ _qwen_worker.py ──▶ result.json
+   （探测/调度/切句）                    （只做推理，不 import 主工程）
+```
+
+收益：主环境永远轻量（没显卡也能装、CI 里不用下 3GB torch）；
+代价：每次转写多付一次模型加载（实测 6.6～10.9s），音频越长越无所谓。
+
+#### 数据契约
+
+`_qwen_worker.py` 只认命令行参数，结果写 JSON，**日志全部走 stderr**
+（主进程逐行转发到自己的日志，所以用户看到的是一份连续的日志）：
+
+```json
+{
+  "language": "Chinese", "text": "整段文字……",
+  "time_stamps": [{"text": "今", "start": 0.12, "end": 0.34}, ...],
+  "duration": 72.538, "load_seconds": 6.638, "elapsed_seconds": 5.8
+}
+```
+
+工人里有两处针对小显存机器的处理（都是安全的）：
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` 缓解碎片；
+跳过 `transformers` 加载前的显存预热（1.7B 会一次性申请 3.2GB，8GB 卡直接 OOM）。
+另外 `--low-mem` 会走 meta 设备 + `safetensors.load_file(device="cuda:0")`，
+让权重分片**直接进显存**，绕开"整片读进 CPU 内存"导致的 `页面文件太小`。
+
+#### Qwen 只输出一整段文字，字幕分段是本工程做的
+
+这是接入 Qwen 最费事的地方：它没有 faster-whisper 那种天然的分段与时间戳。
+`qwen_engine.py` 提供两条路径：
+
+| 条件 | 时间戳来源 | 算法 |
+|---|---|---|
+| 装了 `Qwen3-ForcedAligner-0.6B` | `forced-aligner` | 见下 |
+| 没装 | `vad-proportional` | 按标点切句 → Silero VAD 找说话区间 → 按字数比例分配 |
+
+**精确路径（有对齐模型）**——难点在于对齐模型返回的 token **是去掉标点的**
+（`is_kept_char()` 只保留字母、数字、撇号），所以不能直接拼：
+
+1. 把原文按"会保留的字符"压成一条参考串，同时记下每个字符在原文里的下标；
+2. 每个 token 在参考串里顺序查找（带 8 字符容差，可自我纠偏），映射回原文下标区间；
+3. 命中率不足 90% 就判定这套映射不成立，退回退化路径；
+4. 遍历 token 累积成段，遇到**句末标点 / 明显停顿（≥1.2s）/ 超长（>80 字或 >12s）**
+   就断开；切片时把紧随其后的标点补回来（否则字幕会丢掉所有句读）。
+
+实测这段算法在 42 秒英文素材上切出 7 段，`''.join(段文字)` 与原文
+**归一化后长度完全相等**（525/525 字符），标点一个不丢。
+
+### 4.9 引擎选择与词表提示的差异
+
+`pipeline.build_transcriber()` 按 `opts.engine` 造识别器，两个引擎的
+`.transcribe()` 签名与返回值一致（都返回 `TranscriptionResult`），所以
+流水线后面（写文件、进度条、JSON 组装）完全不用区分引擎。
+
+`--model` 的默认值是 Whisper 的 `large-v3`；切到 Qwen 引擎时它显然不是用户本意，
+会被当作"未指定"，改用 Qwen 的默认模型（本地 `models/Qwen3-ASR-1.7B`，否则仓库名）。
+
+**词表提示的写法必须区分引擎**（`glossary_prompt_for()`）：
+
+| 引擎 | 用哪个字段 | 写法 |
+|---|---|---|
+| faster-whisper | `initial_prompt` | 极短、只放符号：`符号：u(x)、v(x)。`（实测 30～80 字最稳） |
+| qwen3-asr | `context`（system message） | **描述性完整句**：`视频里写出的公式和符号有u(x)、v(x)、x0。` |
+
+Qwen 这一栏不能用祈使句（「请准确识别以下术语…」）：实测那样写模型会**复述 context
+而不转写音频**。改成描述"视频里有什么"之后能正常转写 —— 但进一步实测发现
+context 对结果**没有可观测影响**，详见 [models.md 第 6.4 节](models.md#64-实测context词表偏置没有效果)。
+
+另外，Qwen 引擎下**不做**"偏置失效就回退重跑"（那是 faster-whisper 特有的静默失效问题），
+只统计评分写进 JSON —— 重跑一次要多付 10 秒的模型加载，不值得。
+
 ## 5. ④ 输出
 
 `write_outputs()` 按 `--formats` 写文件，文件名冲突时自动改名（`xxx.json` → `xxx-1.json`），
@@ -231,12 +317,16 @@ CLI 用它画进度条和 `--stream` 逐句输出，Web UI 用它更新 Gradio �
 | 单文件一个 `process()` 调用 | 易测试、易并发、无全局状态 | 批量时需外部的模型缓存 |
 | JSON 作为主产物 | 下游（字幕/检索/翻译）都从它二次加工 | 比纯文本略大 |
 | 保留温度回退序列 | 难音频不会输出垃圾 | 极端情况下更慢 |
+| Qwen3-ASR 走独立环境 + 子进程 | torch 与 CTranslate2 不互相牵制；主环境永远轻量、CI 不用装 3GB | 每次转写多一次模型加载（6.6～10.9s）；多一层 JSON 契约 |
+| Qwen 的时间戳靠强制对齐模型 | 模型本身不分段，对齐模型能给出词级时间 | 多 1.8GB 磁盘；不装就得接受估算时间（JSON 里会标明） |
+| 两个引擎共用 `TranscriptionResult` | 上层（写文件/进度/JSON）零改动，可随时 A/B | 接口里有些字段对 Qwen 无意义（置空并在 JSON 里标明） |
 
 ## 8. 想改的话从哪下手
 
 | 想做的事 | 改哪里 | 注意 |
 |---|---|---|
 | 换识别引擎（FunASR/SenseVoice） | `transcriber.py` 的 `Transcriber.transcribe()` | 保持返回 `TranscriptionResult`（内含 `Segment` 列表）即可，上层不用动 |
+| 给 Qwen 加新的后处理/切句规则 | `qwen_engine.py` 的 `group_time_stamps()` | 有 `tests/test_qwen_engine.py` 的合成用例兜底 |
 | 加导出格式 | `writers.py` + `SUPPORTED_FORMATS` | 记得补 `tests/test_units.py` 用例 |
 | 加命令行参数 | `cli.py` 的 `build_parser()` | 同时更新 README 参数表与本文档 |
 | 改 VAD 策略 | `transcriber.py` 的 `vad_parameters` | 改完用 `samples/` 里的样例对比分段数 |
