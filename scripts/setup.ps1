@@ -1,11 +1,16 @@
 ﻿# 一键部署 video2context（Windows PowerShell）
 #
-#   powershell -ExecutionPolicy Bypass -File scripts\setup.ps1                     # 只部署 Qwen3-ASR（默认，推荐）
+#   powershell -ExecutionPolicy Bypass -File scripts\setup.ps1                     # 部署 Qwen3-ASR（默认，推荐）
+#   powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -SkipModels         # 只建环境，不下模型
 #   powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Engine whisper     # 只部署 Whisper（轻量，不需要 torch）
 #   powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Engine both        # 两个引擎都装
-#   powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -DownloadModels     # 顺带把模型也下好（约 6GB / 3GB）
 #   powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Web                # 额外装网页界面
 #   powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Torch cpu          # 没有 N 卡时
+#
+# 默认会把模型一起下好（Qwen 约 6GB / Whisper 约 3GB），可断点续传、中断后重跑接着下。
+# 为什么默认就下：模型反正第一次运行要用，提前下好可以走国内镜像（快得多）；
+# 而且 Qwen 的**强制对齐模型**决定字幕时间精度 —— 少了它字幕时间会掉到最粗的一档
+# （详见 docs/troubleshooting.md 7.4）。
 #
 # 引擎怎么选、各设备怎么部署，见 docs/deploy.md。
 param(
@@ -13,7 +18,7 @@ param(
     [string]$Engine = "qwen",
     [ValidateSet("cu126", "cu124", "cu121", "cpu", "none")]
     [string]$Torch = "cu126",
-    [switch]$DownloadModels,
+    [switch]$SkipModels,
     [switch]$Web,
     [string]$Mirror = "https://pypi.tuna.tsinghua.edu.cn/simple"
 )
@@ -70,7 +75,8 @@ if ($Web) {
 if ($wantQwen) {
     Write-Host "[4/4] 部署 Qwen3-ASR 独立环境 ..." -ForegroundColor Cyan
     $qwenArgs = @("-Torch", $Torch, "-Mirror", $Mirror)
-    if ($DownloadModels) { $qwenArgs += "-DownloadModels" }
+    if ($SkipModels) { $qwenArgs += "-SkipModels" }
+    # 模型下载交给 setup_qwen.ps1（识别模型 + 强制对齐模型，两者默认都下）
     & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "setup_qwen.ps1") @qwenArgs
 } else {
     Write-Host "[4/4] 跳过 Qwen3-ASR" -ForegroundColor DarkGray
@@ -78,7 +84,7 @@ if ($wantQwen) {
 
 # ---------------------------------------------------------------- Whisper 模型
 $whisperModel = Join-Path $root "models\faster-whisper-large-v3"
-if ($wantWhisper -and $DownloadModels -and -not (Test-Path (Join-Path $whisperModel "model.bin"))) {
+if ($wantWhisper -and -not $SkipModels -and -not (Test-Path (Join-Path $whisperModel "model.bin"))) {
     Write-Host "[i] 下载 Whisper large-v3（约 3GB，支持断点续传）..." -ForegroundColor Cyan
     & $py scripts\download_model.py large-v3 --source modelscope --out $whisperModel
 }
@@ -92,9 +98,10 @@ Write-Host ""
 Write-Host "完成。用法：" -ForegroundColor Green
 Write-Host "  .\.venv\Scripts\python -m video2context 我的视频.mp4"
 Write-Host "  .\.venv\Scripts\python -m video2context webui"
-if (-not $DownloadModels) {
+if ($SkipModels) {
     Write-Host ""
-    Write-Host "还没下载模型的话，第一次运行会自动下；也可以现在手动下：" -ForegroundColor Yellow
+    Write-Host "注意：这次跳过了模型下载。第一次运行会自动下，但走 HuggingFace、国内会慢。" -ForegroundColor Yellow
+    Write-Host "建议现在补下（可断点续传）：" -ForegroundColor Yellow
     if ($wantQwen) {
         Write-Host "  .\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out models\Qwen3-ASR-1.7B"
         Write-Host "  .\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out models\Qwen3-ForcedAligner-0.6B"

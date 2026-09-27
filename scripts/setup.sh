@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # 一键部署 video2context（Linux / macOS）
 #
-#   bash scripts/setup.sh                          # 只部署 Qwen3-ASR（默认，推荐）
+#   bash scripts/setup.sh                          # 部署 Qwen3-ASR（默认，推荐）
+#   SKIP_MODELS=1 bash scripts/setup.sh            # 只建环境，不下模型
 #   bash scripts/setup.sh whisper                  # 只部署 Whisper（轻量，不需要 torch）
 #   bash scripts/setup.sh both                     # 两个引擎都装
-#   DOWNLOAD_MODELS=1 bash scripts/setup.sh        # 顺带把模型也下好（约 6GB / 3GB）
 #   WEB=1 bash scripts/setup.sh                    # 额外装网页界面
 #   TORCH_INDEX=cpu bash scripts/setup.sh          # 没有 N 卡时
+#
+# 默认会把模型一起下好（Qwen 约 6GB / Whisper 约 3GB），可断点续传、中断后重跑接着下。
+# 为什么默认就下：模型反正第一次运行要用，提前下好可以走国内镜像（快得多）；
+# 而且 Qwen 的**强制对齐模型**决定字幕时间精度 —— 少了它字幕时间会掉到最粗的一档
+# （详见 docs/troubleshooting.md 7.4）。
 #
 # 引擎怎么选、各设备怎么部署，见 docs/deploy.md。
 set -euo pipefail
@@ -29,6 +34,7 @@ esac
 
 torch_index="${TORCH_INDEX:-cu126}"
 mirror="${PIP_MIRROR:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+skip_models="${SKIP_MODELS:-0}"
 
 want_whisper=0
 want_qwen=0
@@ -77,14 +83,15 @@ fi
 # ---------------------------------------------------------------- Qwen 独立环境
 if [ "$want_qwen" = "1" ]; then
     echo "[4/4] 部署 Qwen3-ASR 独立环境 ..."
-    TORCH_INDEX="$torch_index" PIP_MIRROR="$mirror" DOWNLOAD_MODELS="${DOWNLOAD_MODELS:-0}" \
+    # 模型下载交给 setup_qwen.sh（识别模型 + 强制对齐模型，两者默认都下）
+    TORCH_INDEX="$torch_index" PIP_MIRROR="$mirror" SKIP_MODELS="$skip_models" \
         bash "$root/scripts/setup_qwen.sh"
 else
     echo "[4/4] 跳过 Qwen3-ASR"
 fi
 
 # ---------------------------------------------------------------- Whisper 模型
-if [ "$want_whisper" = "1" ] && [ "${DOWNLOAD_MODELS:-0}" = "1" ] \
+if [ "$want_whisper" = "1" ] && [ "$skip_models" != "1" ] \
     && [ ! -f "models/faster-whisper-large-v3/model.bin" ]; then
     echo "[i] 下载 Whisper large-v3（约 3GB，支持断点续传）..."
     "$venv_py" scripts/download_model.py large-v3 --source modelscope --out models/faster-whisper-large-v3
@@ -102,9 +109,10 @@ cat <<'EOF'
   ./.venv/bin/python -m video2context webui
 EOF
 
-if [ "${DOWNLOAD_MODELS:-0}" != "1" ]; then
+if [ "$skip_models" = "1" ]; then
     echo ""
-    echo "还没下载模型的话（第一次运行会自动下载；手动下载见 docs/deploy.md）："
+    echo "注意：这次跳过了模型下载。第一次运行会自动下，但走 HuggingFace、国内会慢。"
+    echo "建议现在补下（可断点续传）："
     if [ "$want_qwen" = "1" ]; then
         echo "  .venv/bin/python scripts/download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out models/Qwen3-ASR-1.7B"
         echo "  .venv/bin/python scripts/download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out models/Qwen3-ForcedAligner-0.6B"

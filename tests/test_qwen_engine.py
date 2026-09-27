@@ -344,6 +344,44 @@ class TimestampSourceTest(unittest.TestCase):
         self.assertEqual(result.segments, [])
 
 
+class AlignerStatusTest(unittest.TestCase):
+    """对齐模型是字幕时间精度的分界线，三种状态都要在日志里说清楚。"""
+
+    def _logs_for(self, aligner) -> str:
+        from video2context.qwen_engine import _log_aligner_status
+
+        lines: list[str] = []
+        _log_aligner_status(aligner, lines.append)
+        return "\n".join(lines)
+
+    def test_disabled_is_explained(self) -> None:
+        text = self._logs_for(None)
+        self.assertIn("已关闭", text)
+        self.assertIn("估算", text)
+
+    def test_not_downloaded_yet_hints_at_predownload(self) -> None:
+        # 仓库名与写错的本地路径结构上分不开，所以这条消息对两者都成立：
+        # 「按这个名字加载、本地没有就去网上拿」+ 给出更快的下载方式
+        text = self._logs_for("Qwen/Qwen3-ForcedAligner-0.6B")
+        self.assertIn("本地没有", text)
+        self.assertIn("HuggingFace", text)
+        self.assertIn("download_model.py", text)
+
+    def test_missing_local_dir_gets_the_same_actionable_hint(self) -> None:
+        # 用一定不存在的路径：不能写 models/xxx —— 开发机上那个目录是真的存在的
+        missing = str(Path(__file__).resolve().parent / "_no_such_aligner_dir")
+        text = self._logs_for(missing)
+        self.assertIn("本地没有", text)
+        self.assertIn("download_model.py", text)
+
+    def test_ready_dir_says_precise(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            text = self._logs_for(tmp)
+        self.assertIn("精确到词", text)
+
+
 class QwenPythonTest(unittest.TestCase):
     def test_explicit_missing_path_is_not_silently_ignored(self) -> None:
         # 明确指定了就用它，不存在就报 None（而不是偷偷回退到 .venv-qwen）

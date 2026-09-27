@@ -3,18 +3,24 @@
 # 单独跑这个脚本 = 完整部署「只用 Qwen3-ASR，不装 Whisper」的环境：
 #   * 主环境 .venv        → 只装公共依赖（ffmpeg），保持无 torch
 #   * 独立环境 .venv-qwen → torch + transformers + qwen-asr
+#   * 两个模型            → 识别模型 + **强制对齐模型**（默认一起下，约 6GB）
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\setup_qwen.ps1
 #   powershell -ExecutionPolicy Bypass -File scripts\setup_qwen.ps1 -Torch cpu
-#   powershell -ExecutionPolicy Bypass -File scripts\setup_qwen.ps1 -DownloadModels
+#   powershell -ExecutionPolicy Bypass -File scripts\setup_qwen.ps1 -SkipModels   # 先不下载模型
 #
-# 为什么要单独一个环境：Qwen3-ASR 需要 torch + transformers（装完约 3GB），
+# 为什么单独一个环境：Qwen3-ASR 需要 torch + transformers（装完约 3GB），
 # 而主工程刻意保持轻量（Whisper 引擎走 CTranslate2，不需要 torch）。
 # 混进同一个环境容易把依赖搞坏，所以单开 .venv-qwen，由子进程桥接调用。
+#
+# 为什么要连对齐模型一起装：Qwen3-ASR 不输出时间戳，字幕时间是本工程造的。
+# 没有对齐模型时只能按"说话区间"估算，而**只装 Qwen 的机器没有 faster-whisper，
+# 也就没有 VAD**，会掉到最粗的一档（在整条音轨上平均分配，长静音视频字幕会明显错位）。
+# 装上它就直接精确到词。详见 docs/troubleshooting.md 7.4。
 param(
     [ValidateSet("cu126", "cu124", "cu121", "cpu", "none")]
     [string]$Torch = "cu126",
-    [switch]$DownloadModels,
+    [switch]$SkipModels,
     [string]$Mirror = "https://pypi.tuna.tsinghua.edu.cn/simple"
 )
 
@@ -80,19 +86,22 @@ Write-Host "[5/5] 环境自检 ..." -ForegroundColor Cyan
 & $py -c "import torch, transformers, qwen_asr; print('  torch', torch.__version__, '| cuda', torch.cuda.is_available(), '| transformers', transformers.__version__)"
 & $mainPy -m video2context --engine qwen3-asr --qwen-setup
 
-if ($DownloadModels) {
-    Write-Host "[i] 下载模型（约 6GB，支持断点续传）..." -ForegroundColor Cyan
-    # download_model.py 只用标准库，主环境哪怕只装了 imageio-ffmpeg 也能跑
+if ($SkipModels) {
+    Write-Host "[i] 按 -SkipModels 跳过模型下载（第一次运行会自动下）" -ForegroundColor Yellow
+} else {
+    # 对齐模型不是可选项：没有它，字幕时间会掉到最粗的一档（见文件开头说明）。
+    Write-Host "[i] 下载识别模型（约 4GB，支持断点续传，中断后重跑即可接着下）..." -ForegroundColor Cyan
     & $mainPy scripts\download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out models\Qwen3-ASR-1.7B
+    Write-Host "[i] 下载强制对齐模型（约 1.8GB，字幕精确到词就靠它）..." -ForegroundColor Cyan
     & $mainPy scripts\download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out models\Qwen3-ForcedAligner-0.6B
 }
 
 Write-Host ""
 Write-Host "完成。用法：" -ForegroundColor Green
 Write-Host "  .\.venv\Scripts\python -m video2context 我的视频.mp4"
-if (-not $DownloadModels) {
+if ($SkipModels) {
     Write-Host ""
-    Write-Host "还没下载模型的话（约 6GB；第一次运行也会自动下）：" -ForegroundColor Yellow
+    Write-Host "记得补下模型（约 6GB；第一次运行也会自动下，但走 HuggingFace、国内会慢）：" -ForegroundColor Yellow
     Write-Host "  .\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out models\Qwen3-ASR-1.7B"
     Write-Host "  .\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out models\Qwen3-ForcedAligner-0.6B"
 }

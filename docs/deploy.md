@@ -79,14 +79,22 @@ python -m pip --python .venv/bin/python install --upgrade pip
 
 这一条路**不安装 Whisper**：主环境只有一个 ffmpeg 包，识别全部跑在独立的 `.venv-qwen` 里。
 
+脚本会**默认把两个模型都下好**（识别模型 4GB + 强制对齐模型 1.8GB，共约 6GB）：
+
+| 模型 | 体积 | 作用 | 能不能不下 |
+|---|---|---|---|
+| `Qwen3-ASR-1.7B` | 4.0GB | 识别主力 | 不能 |
+| `Qwen3-ForcedAligner-0.6B` | 1.8GB | 字幕时间**精确到词** | 可以，但**不建议**（见下方说明） |
+
 ### Windows（有 NVIDIA 显卡）
 
 ```powershell
 # 默认就是 qwen；-Torch cu126 对应 CUDA 12.x 驱动
+# 模型默认一起下（约 6GB，可断点续传，中途 Ctrl+C 下次接着下）
 powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 
-# 顺手把模型也下好（约 6GB，可断点续传，中途 Ctrl+C 下次接着下）
-powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -DownloadModels
+# 想先只建环境、不下模型（第一次运行会自动下，但走 HuggingFace 会慢）
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -SkipModels
 ```
 
 ### Windows（没有 N 卡 / 只想先跑通流程）
@@ -98,43 +106,59 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Torch cpu
 ### macOS / Linux
 
 ```bash
-bash scripts/setup.sh                      # 默认 qwen + cu126
+bash scripts/setup.sh                      # 默认 qwen + cu126，模型一起下
 TORCH_INDEX=cpu bash scripts/setup.sh      # macOS 一律用 cpu
-DOWNLOAD_MODELS=1 bash scripts/setup.sh    # 连模型一起下
+SKIP_MODELS=1 bash scripts/setup.sh        # 只建环境，不下模型
 ```
 
 > **macOS 说明**：Apple Silicon 上 PyTorch 的 MPS 后端本工程还没有接（走的是 `device_map`），
 > 目前按 CPU 跑。能用，但慢，建议只在短音频上用。
+
+### 为什么对齐模型是默认装的，不是可选项
+
+Qwen3-ASR **不输出时间戳**，字幕时间是本工程造的，有三档质量：
+
+| 档位 | 条件 | 精度 |
+|---|---|---|
+| `forced-aligner` | 装了强制对齐模型 | **精确到词** |
+| `vad-proportional` | 没装，但能拿到 Silero VAD 的说话区间 | 估算 |
+| `even-spread` | 没装，**且**没有 VAD（只装 Qwen 的机器就是这样） | 最粗，字幕会铺到没人说话的地方 |
+
+只装 Qwen 时没有 `faster-whisper`，也就没有 VAD，所以少了对齐模型就会直接掉到最粗的一档。
+1.8GB 换"字幕能不能用"，这笔账很划算 —— 所以安装脚本默认帮你装上。
+真要省这 1.8GB 也可以：`--qwen-aligner off`（结果 JSON 里的 `asr.timestamp_source`
+会如实写成 `even-spread`）。
 
 ### 这个脚本做了什么
 
 1. 建主环境 `.venv`，只装 `requirements-base.txt`（= `imageio-ffmpeg`）；
 2. 建独立环境 `.venv-qwen`，用 PyTorch 官方索引装对应 CUDA 版本的 torch；
 3. 装 `requirements-qwen.txt`（`qwen-asr` + `transformers==4.57.6` 等）；
-4. 跑一次自检，打印解释器 / 模型 / 对齐模型是否就绪。
+4. 跑一次自检，打印解释器 / 模型 / 对齐模型是否就绪；
+5. 下载识别模型与强制对齐模型（走魔搭，可断点续传）。
 
 也可以只跑 Qwen 那部分（效果完全一样，脚本自己会把主环境补上）：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\setup_qwen.ps1 -DownloadModels
+powershell -ExecutionPolicy Bypass -File scripts\setup_qwen.ps1
 ```
 ```bash
-DOWNLOAD_MODELS=1 bash scripts/setup_qwen.sh
+bash scripts/setup_qwen.sh
 ```
 
 ---
 
 ## 3. 路线 B：只部署 Whisper
 
-不装 torch，磁盘占用最小，没有显卡也能跑。
+不装 torch，磁盘占用最小，没有显卡也能跑。模型（Whisper large-v3，约 3GB）同样默认一起下。
 
 ```powershell
 # Windows
-powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Engine whisper -DownloadModels
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Engine whisper
 ```
 ```bash
 # macOS / Linux
-DOWNLOAD_MODELS=1 bash scripts/setup.sh whisper
+bash scripts/setup.sh whisper
 ```
 
 手工装也行：
@@ -158,10 +182,10 @@ sudo apt install libcublas-12-* libcudnn9-cuda-12    # Ubuntu 示例
 ## 4. 路线 C：两个都装
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Engine both -DownloadModels
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Engine both
 ```
 ```bash
-DOWNLOAD_MODELS=1 bash scripts/setup.sh both
+bash scripts/setup.sh both
 ```
 
 两个引擎都可用时，默认走 **Qwen**（效果更好），随时用 `--engine faster-whisper` 换回来。
@@ -176,11 +200,12 @@ python -m video2context 课程.mp4 -f json,srt -n 课程-qwen
 
 ## 5. 模型怎么下（三条路都要）
 
-模型**不在仓库里**，第一次运行会自动下载。网络不稳时建议用自带的**分块 + 断点续传**下载器，
+模型**不在仓库里**。安装脚本默认会下好（走魔搭，国内快），所以正常流程里不用管这一节。
+需要单独下（离线准备、补下、或者用了 `-SkipModels`）时，用自带的**分块 + 断点续传**下载器，
 它支持 HuggingFace 与魔搭（ModelScope，国内通常快 5 倍以上），可以反复跑到下完为止：
 
 ```powershell
-# Qwen3-ASR（路线 A / C）
+# Qwen3-ASR（路线 A / C）—— 两个都要下，第二个决定字幕时间精度
 .\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out models\Qwen3-ASR-1.7B
 .\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out models\Qwen3-ForcedAligner-0.6B
 
@@ -191,7 +216,7 @@ python -m video2context 课程.mp4 -f json,srt -n 课程-qwen
 | 模型 | 体积 | 作用 | 能不能不下 |
 |---|---|---|---|
 | `Qwen3-ASR-1.7B` | 4.0GB | 识别主力 | 不能（不想下这么大的话用 `models\Qwen3-ASR-0.6B`，1.6GB） |
-| `Qwen3-ForcedAligner-0.6B` | 1.8GB | 给字幕**精确到词**的时间戳 | **能**，加 `--qwen-aligner off` 即可（时间会变粗） |
+| `Qwen3-ForcedAligner-0.6B` | 1.8GB | 给字幕**精确到词**的时间戳 | 技术上能（`--qwen-aligner off`），但**不建议**，见路线 A 的说明 |
 | `faster-whisper-large-v3` | 3.1GB | Whisper 引擎 | 不能 |
 
 `download_model.py` 只用标准库，所以主环境只装了 `imageio-ffmpeg` 也能跑它。
@@ -310,7 +335,7 @@ python -m video2context --engine qwen3-asr --qwen-setup   # 只看 Qwen 那一�
 
 ```powershell
 # 有网机器：装依赖 + 下模型（都在工程目录内）
-powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Engine both -DownloadModels
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Engine both
 
 # 额外把 pip 包也导出成离线 wheels（可选，目标机器不能连 pip 源时用）
 .\.venv\Scripts\python -m pip download -r requirements.txt -r requirements-web.txt -d wheels

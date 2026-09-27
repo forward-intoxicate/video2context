@@ -67,7 +67,11 @@
 | **B. 只装 Whisper** | 没显卡 / 想省 3GB torch | ~4GB | `scripts\setup.ps1 -Engine whisper` | `bash scripts/setup.sh whisper` |
 | **C. 两个都装** | 想 A/B 对比 | ~13GB | `scripts\setup.ps1 -Engine both` | `bash scripts/setup.sh both` |
 
-加上 `-DownloadModels`（Windows）或 `DOWNLOAD_MODELS=1`（macOS/Linux）可以连模型一起下好。
+**模型默认一起下好**（走魔搭镜像，可断点续传、中断后重跑接着下）；
+只想先建环境就加 `-SkipModels`（Windows）/ `SKIP_MODELS=1`（macOS、Linux）。
+
+走 Qwen 路线时脚本会连**强制对齐模型**（1.8GB）一起装 —— 它不是可选项：
+Qwen 不输出时间戳，缺了它字幕时间会掉到最粗的一档（详见 [docs/deploy.md](docs/deploy.md#为什么对齐模型是默认装的不是可选项)）。
 
 **硬件门槛**：
 
@@ -114,11 +118,11 @@
 git clone https://github.com/forward-intoxicate/video2context.git
 cd video2context
 
-# 一键脚本：默认部署 Qwen3-ASR（推荐路线）
+# 一键脚本：默认部署 Qwen3-ASR（推荐路线），模型也一起下好（约 6GB）
 powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 
-# 想连 6GB 模型一起下好，就加 -DownloadModels
-powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -DownloadModels
+# 只想先建环境、模型以后再下
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -SkipModels
 
 # 没有 N 卡 / 想省 3GB torch → 只装 Whisper
 powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Engine whisper
@@ -212,8 +216,8 @@ Qwen3-ASR 需要 `torch` + `transformers`（约 3GB），而主环境刻意保�
 由子进程桥接调用 —— 详见 [docs/architecture.md](docs/architecture.md)「Qwen3-ASR 为什么走子进程」。
 
 ```powershell
-# Windows：一次把主环境（只装 ffmpeg）+ .venv-qwen 都建好
-powershell -ExecutionPolicy Bypass -File scripts\setup_qwen.ps1 -DownloadModels
+# Windows：一次把主环境（只装 ffmpeg）+ .venv-qwen 都建好，模型也一起下
+powershell -ExecutionPolicy Bypass -File scripts\setup_qwen.ps1
 
 # 自检：解释器 / 模型 / 对齐模型是否就绪
 .\.venv\Scripts\python -m video2context --engine qwen3-asr --qwen-setup
@@ -221,9 +225,13 @@ powershell -ExecutionPolicy Bypass -File scripts\setup_qwen.ps1 -DownloadModels
 
 ```bash
 # macOS / Linux
-DOWNLOAD_MODELS=1 bash scripts/setup_qwen.sh
+bash scripts/setup_qwen.sh
 ```
 
+> **对齐模型默认就装**（1.8GB）。它是字幕时间精度的分界线：少了它，只装 Qwen 的机器
+> 会掉到"在整条音轨上平均分配"那一档。真要省这 1.8GB 用 `--qwen-aligner off`。
+> 只想先建环境、不下模型：加 `-SkipModels`（Windows）或 `SKIP_MODELS=1`。
+>
 > 只想换掉 torch 的 CUDA 版本：`-Torch cu124` / `-Torch cpu`；
 > 已经有别的环境装了 `qwen-asr`：设 `V2C_QWEN_PYTHON=<解释器路径>`，不用新建。
 
@@ -822,7 +830,7 @@ video2context/
 
 ```bash
 pip install -r requirements-dev.txt
-python -m unittest discover -s tests -v    # 94 项测试，离线、不需要模型和显卡、不需要密钥
+python -m unittest discover -s tests -v    # 101 项测试，离线、不需要模型和显卡、不需要密钥
 ruff check video2context tests scripts      # 代码检查
 python scripts/check_docs.py                # 文档链接与锚点
 python scripts/check_secrets.py --all       # 防泄露扫描

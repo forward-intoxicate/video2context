@@ -603,8 +603,7 @@ class QwenAsrEngine:
                 aligner=wanted_aligner,
             )
             log(f"      调用 Qwen3-ASR 子进程：{self.python}")
-            if wanted_aligner:
-                log(f"      强制对齐模型：{wanted_aligner}")
+            _log_aligner_status(wanted_aligner, log)
             payload = self._run(command, log)
 
         return self._to_result(
@@ -809,6 +808,34 @@ class QwenAsrEngine:
                 "context_applied": bool(context),
                 "context_effect": "none-observed",
             },
+        )
+
+
+def _log_aligner_status(aligner: Optional[str], log: LogCallback) -> None:
+    """把对齐模型的状态说清楚。
+
+    它是**字幕时间精度的分界线**，不是可有可无的附件：
+
+    * 关掉了（``--qwen-aligner off``）→ 时间只能估算；
+    * 本地没有 → 首次运行会从 HuggingFace 拉 1.8GB，国内很慢（建议改用下载器走魔搭）；
+    * 就绪 → 时间精确到词。
+
+    这三种情况用户都该在日志里一眼看到，而不是等字幕出来发现时间不对再回头查。
+
+    注意"本地没有"这条**不区分**用户给的是仓库名还是写错的路径 ——
+    ``Qwen/Qwen3-ForcedAligner-0.6B`` 和 ``models/xxx`` 结构上一模一样，猜不出来。
+    所以措辞对两种情况都成立：按这个名字加载，本地没有就去网上拿。
+    """
+    if aligner is None:
+        log("      提示：对齐模型已关闭，字幕时间只能按说话区间估算（去掉 --qwen-aligner off 可恢复）")
+    elif Path(aligner).is_dir():
+        log(f"      强制对齐模型：{aligner}（字幕时间精确到词）")
+    else:
+        log(
+            f"      强制对齐模型：{aligner} —— 本地没有，首次运行会去 HuggingFace 拉约 1.8GB。\n"
+            "        国内建议先预下载（走魔搭快得多，也可断点续传）：\n"
+            "        python scripts/download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B "
+            "--source modelscope --out models/Qwen3-ForcedAligner-0.6B"
         )
 
 

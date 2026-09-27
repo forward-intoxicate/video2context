@@ -14,10 +14,14 @@
   `requirements-qwen.txt`（+ Qwen，装在独立的 `.venv-qwen`）。
   `pyproject.toml` 的 `dependencies` 只留公共依赖，Whisper 变成 extra：`pip install "video2context[whisper]"`
 - **安装脚本支持选引擎**：`setup.ps1 -Engine qwen|whisper|both`（默认 qwen）、
-  `setup.sh qwen|whisper|both`；`-DownloadModels` / `DOWNLOAD_MODELS=1` 可连模型一起下。
+  `setup.sh qwen|whisper|both`；**模型默认一起下**（`-SkipModels` / `SKIP_MODELS=1` 才是跳过）。
   `setup_qwen.ps1` / `setup_qwen.sh` 现在自身就是完整的 Qwen-only 部署（连主环境一起备好）
 - **`doctor` 重写**：报告本机部署了哪些引擎、Qwen 解释器与模型状态、**实际会用哪个引擎**；
   标签按东亚字宽对齐；只装了 Qwen 时用 `nvidia-smi` 兜底探测显卡
+- **强制对齐模型改为默认安装**（Qwen 路线，1.8GB）。它是字幕时间精度的分界线：
+  Qwen3-ASR 不输出时间戳，字幕时间由本工程生成，没有对齐模型时只能估算，
+  而只装 Qwen 的机器又没有 VAD，会掉到最粗的一档（在整条音轨上平均分配）。
+  运行时会打印对齐模型的三态（就绪 / 本地没有 / 已关闭），不再等到字幕出来才发现时间不对
 - 只装 Qwen 时没有 faster-whisper，也就没有 Silero VAD，无对齐模型的退化路径会
   **明确说明原因**并指向"装对齐模型"这个正解，而不是抛 `ModuleNotFoundError`
 - **新增 `docs/deploy.md`**：从 0 部署手册 —— 三条路线、各设备/平台、无显卡与纯 CPU、
@@ -94,8 +98,8 @@
 
 ### 测试
 
-- 测试数 28 → 94：新增词表/配置单测与两遍解码的流水线集成测试（桩接大模型，不联网）；
-  新增 `tests/test_qwen_engine.py`（38 项）：语种归一化、时间戳映射、切句、比例分配、
+- 测试数 28 → 101：新增词表/配置单测与两遍解码的流水线集成测试（桩接大模型，不联网）；
+  新增 `tests/test_qwen_engine.py`（45 项）：语种归一化、时间戳映射、切句、比例分配、
   引擎选择与默认引擎解析、解释器探测
   另新增 `docs/deploy.md` 的链接与锚点校验（`check_docs.py` 现在覆盖 11 个文档）
 
