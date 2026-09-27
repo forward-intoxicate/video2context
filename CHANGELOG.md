@@ -4,6 +4,28 @@
 
 ## [未发布]
 
+### 新增：仓库自带可直接跑的示例视频与示例命令
+
+- **新增 3 个离线合成的示例视频**（`samples/`），覆盖不同场景，几十秒就能出结果：
+
+  | 样例 | 时长 | 用途 |
+  |---|---|---|
+  | `demo_zh_math.mp4` | 42s | 中文数学课，含 `u`/`v` 中英混排符号 —— 默认引擎的强项 |
+  | `demo_en_ml.mp4` | 92 词 | 英文梯度下降，术语密集 —— 两个引擎的 WER 对比 |
+  | `demo_zh_daily.mp4` | 29s | 中文日常口语，停顿多 —— 看 VAD 与字幕分段 |
+
+- **`scripts/make_samples.py`**：生成这些样例的脚本，**全程离线** ——
+  用本机自带语音合成（Windows SAPI / macOS `say` / Linux `espeak-ng`）念我们自己写的稿子，
+  再与纯色背景合成。不引入任何第三方素材，避免版权问题（这也是 `samples/formula.mp4`
+  一直 gitignore 的原因）。逐句合成后按停顿拼接，VAD 才有东西可切。
+- 画面上**说到哪句显示哪句**（逐句 `drawtext` + `enable=between(...)`），
+  边听边看就能发现识别错在哪；每句还配 `demo_*.transcript.txt` 逐句稿子，
+  可直接喂给 `experiments/wer_report.py` 算 WER
+- `samples/README.md` 重写：4 个样例的对照表 + **可直接复制粘贴的命令集合**（含
+  两引擎对比跑 WER 的完整流程）；README 与 docs/deploy.md 也各加了一段「先拿样例试跑」
+- 本机实测：中文样例 7 句 → 识别出 7 段，与稿子几乎逐字一致；
+  英文样例 WER 0.00%（Qwen3-ASR-1.7B）
+
 ### 变更：Qwen3-ASR 成为默认引擎，并支持「只部署 Qwen、不装 Whisper」
 
 - **默认引擎改为 `qwen3-asr`**。两个都装了就用 Qwen；

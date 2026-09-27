@@ -157,13 +157,38 @@ TORCH_INDEX=cpu bash scripts/setup.sh    # macOS 一律用 cpu
 .\.venv\Scripts\python -m video2context webui      # 浏览器打开 http://127.0.0.1:7860
 ```
 
-### 4. 想先拿现成的素材试跑？
+### 4. 拿现成的样例试跑
 
-仓库里带了一段 6 分 30 秒的中文真人语音测试视频（公共领域）：
+仓库里带了 4 个可以直接跑的样例（详见 **[samples/README.md](samples/README.md)**）：
+
+| 样例 | 时长 | 内容 |
+|---|---|---|
+| `samples/demo_zh_math.mp4` | 42s | 中文 · 导数运算法则（含 `u`/`v` 这类中英混排符号） |
+| `samples/demo_en_ml.mp4` | 40s | 英文 · 梯度下降（`Adam`、`RMSProp` 等术语密集） |
+| `samples/demo_zh_daily.mp4` | 29s | 中文 · 日常口语（停顿多，看 VAD 与分段） |
+| `samples/chinese_speech_sample.mp4` | 6:30 | 中文真人朗读（公共领域），长音频与提示词效果 |
+
+前三个是**离线合成的语音**（`scripts/make_samples.py` 生成，无第三方素材），第四个是真人录音。
+每个 `demo_*` 都配了 `demo_*.transcript.txt` 逐句稿子，可以对着检查识别结果。
 
 ```powershell
-.\.venv\Scripts\python -m video2context samples\chinese_speech_sample.mp4 -f json,srt,txt -o output
+# 最简：一条命令出文字
+python -m video2context samples\demo_zh_math.mp4
+
+# 出全套产物（JSON + 文本 + SRT + VTT）
+python -m video2context samples\demo_zh_math.mp4 --language zh -f json,txt,srt,vtt
+
+# 只跑前 10 秒试参数，并实时打印每句
+python -m video2context samples\demo_zh_math.mp4 --duration 10 --stream
+
+# 英文样例：两个引擎各跑一遍，再算 WER
+python -m video2context samples\demo_en_ml.mp4 --language en -f json,txt -n en-qwen
+python -m video2context samples\demo_en_ml.mp4 --language en -f json,txt -n en-whisper `
+    --engine faster-whisper --model-dir models\faster-whisper-large-v3
+python experiments\wer_report.py samples\demo_en_ml.transcript.txt output\en-qwen.txt output\en-whisper.txt
 ```
+
+结果默认落在 `output\`。SRT / VTT 可以直接丢进播放器或剪辑软件。
 
 ---
 
@@ -801,12 +826,13 @@ video2context/
 │  └─ webui.py               # Gradio 网页界面
 ├─ docs/                     # 详细文档（部署、架构、模型、排查、开发）
 ├─ experiments/              # Qwen3-ASR 实测脚本与原始结果（不进流水线）
-├─ samples/                  # 公共领域中文测试视频 + 参考输出
+├─ samples/                  # 可直接跑的示例视频（合成 + 公共领域真人录音）+ 逐句稿子
 ├─ scripts/
 │  ├─ setup.ps1 / setup.sh   # 一键部署，-Engine qwen|whisper|both（默认 qwen）
 │  ├─ setup_qwen.ps1 / .sh   # 只部署 Qwen（含主环境 + .venv-qwen），可单独使用
 │  ├─ run_web.ps1 / run_web.sh
 │  ├─ download_model.py      # 模型分块断点续传下载器（HF / 魔搭双源，纯标准库）
+│  ├─ make_samples.py        # 离线生成 samples/ 里的示例视频（本机 TTS + ffmpeg）
 │  ├─ check_docs.py          # 文档链接与锚点校验
 │  └─ check_secrets.py       # 提交前防泄露扫描
 ├─ tests/                    # 离线单元测试（不需要模型和显卡）

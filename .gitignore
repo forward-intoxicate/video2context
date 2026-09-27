@@ -16,6 +16,9 @@ models/
 # 第三方课程视频样例：为避免版权问题默认不提交（想提交就删掉这行）
 samples/formula.mp4
 
+# 示例视频生成过程中的中间产物（scripts/make_samples.py）
+samples/.demo_*/
+
 # 密钥与本地配置：绝不能提交
 .env
 .env.*

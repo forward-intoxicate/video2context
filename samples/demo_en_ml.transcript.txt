@@ -1,0 +1,7 @@
+Today we're going to talk about how machine learning models are actually trained.
+The core idea is gradient descent, which minimizes a loss function by repeatedly taking small steps downhill.
+At each step we compute the gradient with respect to every parameter,
+then update the weights using a small multiplier called the learning rate.
+If the learning rate is too large, training becomes unstable and the loss diverges.
+If it is too small, convergence takes forever.
+That is why modern systems often rely on adaptive optimizers such as Adam, RMSProp, or Adagrad.

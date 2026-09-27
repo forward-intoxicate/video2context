@@ -248,6 +248,21 @@ V2C_ENGINE=faster-whisper
 下面假设已激活虚拟环境（Windows `.\.venv\Scripts\Activate.ps1`，macOS/Linux `source .venv/bin/activate`）。
 不想激活就把 `python` 换成 `.\.venv\Scripts\python` 或 `./.venv/bin/python`。
 
+### 先拿仓库自带的样例试一条
+
+装完别急着找自己的视频 —— 仓库里带了 4 个可以直接跑的样例（详见 [samples/README.md](../samples/README.md)）：
+
+```powershell
+# 42 秒中文数学课样例，出全套产物
+python -m video2context samples\demo_zh_math.mp4 --language zh -f json,txt,srt,vtt
+
+# 40 秒英文样例（术语密集），想对比两个引擎就用这个
+python -m video2context samples\demo_en_ml.mp4 --language en -f json,txt
+```
+
+每个 `demo_*` 都配了逐句稿子 `demo_*.transcript.txt`，可以对着看识别得对不对；
+跑通了再换自己的视频。
+
 ### 最常用
 
 ```powershell
