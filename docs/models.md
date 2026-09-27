@@ -93,7 +93,8 @@ vad_parameters = {"min_silence_duration_ms": 500, "speech_pad_ms": 200}
 
 ## 4. 怎么选（按你的硬件）
 
-> 本节讲的是**默认引擎** faster-whisper 的选型。想换成 Qwen3-ASR 看[第 6 节](#6-qwen3-asr可选的第二个引擎)。
+> 本节讲的是 **Whisper 引擎**的选型（`--engine faster-whisper`）。
+> 默认引擎是 Qwen3-ASR，见[第 6 节](#6-qwen3-asr默认引擎)。
 
 ### 有 NVIDIA 显卡
 
@@ -156,10 +157,11 @@ GPU 那一行的波动来自**批量大小是按剩余显存自动定的**（程
 
 ---
 
-## 6. Qwen3-ASR（可选的第二个引擎）
+## 6. Qwen3-ASR（默认引擎）
 
-`--engine qwen3-asr` 会把识别层换成阿里通义开源的 **Qwen3-ASR**（Apache-2.0）。
-它跟 Whisper 是**并列关系**，不是替代：装了就用，不装完全不影响默认流程。
+`qwen3-asr` 是**默认引擎**：阿里通义开源的 **Qwen3-ASR**（Apache-2.0）。
+它跟 Whisper 是并列的两个引擎 —— 没装它就自动用 Whisper，只装了它就用它，
+两个都装则优先它（见 [architecture.md 4.9](architecture.md#49-引擎选择与词表提示的差异)）。
 
 ### 6.1 三个模型分别干什么
 

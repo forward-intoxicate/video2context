@@ -31,9 +31,10 @@ DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-chat"
 DEFAULT_TIMEOUT = 120.0
 
-#: 默认识别引擎。工程里所有引擎名的归一化在 pipeline 里做，
-#: 这里只提供"用户配置了什么"的原始值，避免 config ←→ pipeline 循环依赖。
-DEFAULT_ENGINE = "faster-whisper"
+#: 首选的默认识别引擎（用户没指定、也没配 V2C_ENGINE 时）。
+#: 实际生效值还要看这台机器上装了哪个引擎，见 ``pipeline.resolve_engine()``。
+#: 引擎名的归一化放在 pipeline 里做，这里只放常量，避免 config ←→ pipeline 循环依赖。
+DEFAULT_ENGINE = "qwen3-asr"
 ENGINE_ENV_VAR = "V2C_ENGINE"
 
 #: 需要在日志/输出里打码的密钥模式

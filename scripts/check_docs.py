@@ -13,6 +13,7 @@ DOCS = [
     ROOT / "CHANGELOG.md",
     ROOT / "CONTRIBUTING.md",
     ROOT / "THIRD_PARTY_NOTICES.md",
+    ROOT / "docs" / "deploy.md",
     ROOT / "docs" / "architecture.md",
     ROOT / "docs" / "glossary.md",
     ROOT / "docs" / "models.md",

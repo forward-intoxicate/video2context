@@ -25,8 +25,8 @@
 | [PyTorch](https://github.com/pytorch/pytorch) | 深度学习运行时 | BSD-3-Clause |
 | [Transformers](https://github.com/huggingface/transformers) | 模型加载与生成 | Apache-2.0 |
 
-平时不装这一套；只有使用 `--engine qwen3-asr` 时才需要，
-详见 [README](README.md#可选装-qwen3-asr-引擎)。
+平时不装这一套；只有走 Qwen3-ASR 那条部署路线时才需要，
+详见 [docs/deploy.md](docs/deploy.md)。
 
 ## 2. ffmpeg
 

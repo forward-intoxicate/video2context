@@ -1,4 +1,13 @@
-# video2context 核心依赖 —— 没有显卡也能跑（自动使用 CPU）
-# 安装：pip install -r requirements.txt
+# video2context 依赖 —— Whisper 引擎
+#
+# 装了它就能用 --engine faster-whisper（轻量、不需要 torch、CPU 也能跑）。
+# 不含 Qwen3-ASR：那个跑在独立的 .venv-qwen 里，见 requirements-qwen.txt。
+#
+# 安装：
+#     pip install -r requirements.txt
+#
+# 只想用 Qwen3-ASR、不想装 Whisper 的话，装 requirements-base.txt 就够，见 docs/deploy.md。
+
+-r requirements-base.txt
+
 faster-whisper>=1.1.0
-imageio-ffmpeg>=0.5.1

@@ -4,6 +4,36 @@
 
 ## [未发布]
 
+### 变更：Qwen3-ASR 成为默认引擎，并支持「只部署 Qwen、不装 Whisper」
+
+- **默认引擎改为 `qwen3-asr`**。两个都装了就用 Qwen；
+  **只装了一个就用那个**（按部署情况自适应），所以走"只装 Whisper"路线的用户
+  不需要每次加 `--engine`。解析优先级：`--engine` > `V2C_ENGINE` > 本机可用的引擎 > 首选 Qwen
+- **依赖分层**，两个引擎可以只装一个：
+  `requirements-base.txt`（公共：ffmpeg）→ `requirements.txt`（+ Whisper）／
+  `requirements-qwen.txt`（+ Qwen，装在独立的 `.venv-qwen`）。
+  `pyproject.toml` 的 `dependencies` 只留公共依赖，Whisper 变成 extra：`pip install "video2context[whisper]"`
+- **安装脚本支持选引擎**：`setup.ps1 -Engine qwen|whisper|both`（默认 qwen）、
+  `setup.sh qwen|whisper|both`；`-DownloadModels` / `DOWNLOAD_MODELS=1` 可连模型一起下。
+  `setup_qwen.ps1` / `setup_qwen.sh` 现在自身就是完整的 Qwen-only 部署（连主环境一起备好）
+- **`doctor` 重写**：报告本机部署了哪些引擎、Qwen 解释器与模型状态、**实际会用哪个引擎**；
+  标签按东亚字宽对齐；只装了 Qwen 时用 `nvidia-smi` 兜底探测显卡
+- 只装 Qwen 时没有 faster-whisper，也就没有 Silero VAD，无对齐模型的退化路径会
+  **明确说明原因**并指向"装对齐模型"这个正解，而不是抛 `ModuleNotFoundError`
+- **新增 `docs/deploy.md`**：从 0 部署手册 —— 三条路线、各设备/平台、无显卡与纯 CPU、
+  模型下载、离线内网、国内加速、磁盘占用与卸载、按症状索引
+- 实测补充：Qwen3-ASR-1.7B 在 **CPU 上是 0.5× 实时**（12 秒音频跑 23.9 秒，比实时还慢），
+  因此没有 N 卡不推荐 Qwen 路线
+
+### 修复
+
+- `resolve_engine()` 里 `normalize_engine("")` 会返回首选引擎（非空），
+  导致"按部署情况自适应"那一档永远轮不到 —— 由新增的单测抓到
+- 流水线测试原先只打补丁 `get_transcriber`，默认引擎改成自适应后会**真的去起 Qwen 子进程**、
+  测试直接卡死；改为打补丁到统一的引擎工厂 `build_transcriber`，测试从此与"本机装了哪个引擎"无关
+- `scripts/setup.sh` 里 `[ a ] || [ b ] && x=1` 的写法在 `set -e` 下会让脚本提前退出，
+  改成显式 `if`；CI 增加 `bash -n` 与 `shellcheck -S error`
+
 ### 新增：识别引擎 `--engine`（faster-whisper / Qwen3-ASR）
 
 - `--engine qwen3-asr`：接入阿里通义 **Qwen3-ASR-1.7B**（Apache-2.0）作为第二个识别引擎。
@@ -64,8 +94,11 @@
 
 ### 测试
 
-- 测试数 28 → 87：新增词表/配置单测与两遍解码的流水线集成测试（桩接大模型，不联网）；
-  新增 `tests/test_qwen_engine.py`（29 项）：语种归一化、时间戳映射、切句、比例分配、引擎选择、解释器探测
+- 测试数 28 → 94：新增词表/配置单测与两遍解码的流水线集成测试（桩接大模型，不联网）；
+  新增 `tests/test_qwen_engine.py`（38 项）：语种归一化、时间戳映射、切句、比例分配、
+  引擎选择与默认引擎解析、解释器探测
+  另新增 `docs/deploy.md` 的链接与锚点校验（`check_docs.py` 现在覆盖 11 个文档）
+
 ## [0.1.0] - 2025-09-25
 
 首个可用版本。

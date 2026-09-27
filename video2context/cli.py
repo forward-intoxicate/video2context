@@ -16,6 +16,8 @@ from .ffmpeg_tools import format_hms, format_hms_ms
 from .glossary import Glossary
 from .pipeline import (
     ENGINE_CHOICES,
+    ENGINE_FASTER_WHISPER,
+    ENGINE_QWEN3_ASR,
     TranscribeOptions,
     is_qwen_engine,
     process,
@@ -555,47 +557,120 @@ def _cmd_doctor(_args: argparse.Namespace) -> int:
     import platform
 
     print(f"video2context {__version__} 环境自检")
-    print(f"  Python            : {sys.version.split()[0]}  ({sys.executable})")
-    print(f"  平台              : {platform.platform()}")
+    print(f"  {_align('Python')}: {sys.version.split()[0]}  ({sys.executable})")
+    print(f"  {_align('平台')}: {platform.platform()}")
 
     try:
         from .ffmpeg_tools import ffmpeg_version, find_ffmpeg
 
-        print(f"  ffmpeg 路径        : {find_ffmpeg()}")
-        print(f"  ffmpeg 版本        : {ffmpeg_version()}")
+        print(f"  {_align('ffmpeg 路径')}: {find_ffmpeg()}")
+        print(f"  {_align('ffmpeg 版本')}: {ffmpeg_version()}")
     except Exception as exc:
-        print(f"  ffmpeg            : 不可用 → {exc}")
+        print(f"  {_align('ffmpeg')}: 不可用 → {exc}")
 
     for module_name in ("faster_whisper", "ctranslate2", "imageio_ffmpeg", "gradio"):
         try:
             module = importlib.import_module(module_name)
             version = getattr(module, "__version__", "已安装")
-            print(f"  {module_name:<18}: {version}")
+            print(f"  {_align(module_name)}: {version}")
         except Exception as exc:
-            print(f"  {module_name:<18}: 未安装（{type(exc).__name__}）")
+            print(f"  {_align(module_name)}: 未安装（{type(exc).__name__}）")
+
+    _doctor_engines()
 
     try:
         from .transcriber import cuda_device_count, register_cuda_dll_dirs
 
         dll_dirs = register_cuda_dll_dirs()
-        print(f"  CUDA 设备数        : {cuda_device_count()}")
+        print(f"  {_align('CUDA 设备数')}: {cuda_device_count()}")
         if dll_dirs:
-            print(f"  CUDA 运行库目录    : {', '.join(dll_dirs)}")
-    except Exception as exc:
-        print(f"  CUDA 检测          : 失败（{type(exc).__name__}: {exc}）")
+            print(f"  {_align('CUDA 运行库目录')}: {', '.join(dll_dirs)}")
+    except Exception:
+        # 只装了 Qwen 时没有 ctranslate2，退回用 nvidia-smi 看看有没有卡
+        print(f"  {_align('CUDA 设备数')}: {_gpu_count_via_smi()}（由 nvidia-smi 探测）")
 
     from .config import find_env_file
 
     env_file = find_env_file()
-    print(f"  配置文件 .env      : {env_file if env_file else '未找到（不影响命令行基础功能）'}")
-    print(f"  大模型（词表推断） : {llm_settings().describe()}")
-    print(f"  默认识别引擎       : {resolve_engine()}（可用 --engine 覆盖，或在 .env 写 V2C_ENGINE）")
+    print(f"  {_align('配置文件 .env')}: {env_file if env_file else '未找到（不影响命令行基础功能）'}")
+    print(f"  {_align('大模型（词表推断）')}: {llm_settings().describe()}")
 
     import os
 
     hf_home = os.environ.get("HF_HOME") or str(Path.home() / ".cache" / "huggingface")
-    print(f"  模型缓存目录       : {hf_home}")
+    print(f"  {_align('模型缓存目录')}: {hf_home}")
     return 0
+
+
+def _align(label: str, width: int = 21) -> str:
+    """把 doctor 的标签补到统一显示宽度，让冒号对齐。
+
+    中文一个字占两格，用 ``len()`` 补空格一定会错位，所以按 East Asian Width 算。
+    宽度取最长标签「大模型（词表推断）」（20 格）+ 1 个空格。
+    """
+    import unicodedata
+
+    shown = sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in label)
+    return label + " " * max(width - shown, 1)
+
+
+def _gpu_count_via_smi() -> str:
+    """没有 ctranslate2 时的显卡探测（只装了 Qwen 的情况）。"""
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            encoding="utf-8",
+            errors="replace",
+        )
+        names = [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
+        return f"{len(names)}（{names[0]}）" if names else "0（未检测到 NVIDIA 显卡）"
+    except Exception:
+        return "0（未检测到 NVIDIA 显卡）"
+
+
+def _doctor_engines() -> None:
+    """报告本机部署了哪些识别引擎 —— 这是排查"为什么用了别的引擎"的第一站。"""
+    from .config import DEFAULT_ENGINE
+    from .pipeline import available_engines, resolve_engine
+    from .qwen_engine import find_qwen_python, resolve_aligner, resolve_qwen_model
+
+    available = available_engines()
+    print("  ── 识别引擎 ──────────────────────────────")
+    for engine, hint in (
+        (ENGINE_QWEN3_ASR, "powershell -ExecutionPolicy Bypass -File scripts/setup_qwen.ps1"),
+        (ENGINE_FASTER_WHISPER, "pip install -r requirements.txt"),
+    ):
+        if engine in available:
+            print(f"  {_align(engine)}: 就绪")
+        else:
+            print(f"  {_align(engine)}: 未部署 → {hint}")
+
+    if ENGINE_QWEN3_ASR in available:
+        print(f"  {_align('Qwen 解释器')}: {find_qwen_python()}")
+        model = resolve_qwen_model(None)
+        suffix = "" if Path(model).is_dir() else "（本地没有，首次运行会自动下载）"
+        print(f"  {_align('Qwen 识别模型')}: {model}{suffix}")
+        aligner = resolve_aligner(None)
+        if aligner is None:
+            print(f"  {_align('Qwen 对齐模型')}: 已关闭（字幕时间只能按说话区间估算）")
+        elif Path(aligner).is_dir():
+            print(f"  {_align('Qwen 对齐模型')}: {aligner}（字幕时间精确到词）")
+        else:
+            print(f"  {_align('Qwen 对齐模型')}: {aligner}（本地没有，首次运行会自动下载）")
+
+    chosen = resolve_engine()
+    if not available:
+        why = f"尚无可用引擎，默认指向 {DEFAULT_ENGINE}"
+    elif len(available) == 1:
+        why = f"本机只部署了 {available[0]}"
+    else:
+        why = f"两个都可用，按首选 {DEFAULT_ENGINE}"
+    print(f"  {_align('实际默认引擎')}: {chosen}（{why}；可用 --engine 覆盖，或写 .env 的 V2C_ENGINE）")
 
 
 def _cmd_webui(args: argparse.Namespace) -> int:

@@ -5,12 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "video2context"
 version = "0.1.0"
-description = "视频/音频 → 文字：ffmpeg 抽取音轨 + faster-whisper 本地识别（中文/英文），支持 GPU 与纯 CPU"
+description = "视频/音频 → 文字：ffmpeg 抽取音轨 + 本地语音识别（Qwen3-ASR / faster-whisper），支持 GPU 与纯 CPU"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
-keywords = ["asr", "speech-to-text", "whisper", "faster-whisper", "subtitle", "transcription", "chinese", "video"]
+keywords = [
+    "asr", "speech-to-text", "whisper", "faster-whisper", "qwen3-asr", "qwen",
+    "subtitle", "transcription", "chinese", "video",
+]
 authors = [{ name = "forward-intoxicate" }]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -30,14 +33,19 @@ classifiers = [
     # 不能再加 "License :: OSI Approved :: MIT License" 分类器，否则 setuptools 报错。
 ]
 dependencies = [
-    "faster-whisper>=1.1.0",
+    # 只保留公共依赖：抽音轨用的 ffmpeg。
+    # 两个识别引擎都是可选的，按需装（见 docs/deploy.md）：
+    #   pip install "video2context[whisper]"   轻量引擎，不需要 torch
+    #   Qwen3-ASR 装在独立的 .venv-qwen 里     pip install -r requirements-qwen.txt
     "imageio-ffmpeg>=0.5.1",
 ]
 
 [project.optional-dependencies]
+# Whisper 引擎（不装也不影响 Qwen 引擎）
+whisper = ["faster-whisper>=1.1.0"]
 # 本地网页界面（需要 Python 3.10+）
 web = ["gradio>=5.0,<7"]
-# Windows + NVIDIA 显卡的 CUDA 运行库
+# Windows + NVIDIA 显卡的 CUDA 运行库（仅 Whisper 引擎需要）
 gpu-win = [
     "nvidia-cublas-cu12>=12.4.5 ; sys_platform == 'win32'",
     "nvidia-cudnn-cu12>=9.1.0 ; sys_platform == 'win32'",

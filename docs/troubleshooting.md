@@ -323,17 +323,31 @@ print(result.payload["asr"]["timestamp_source"])  # forced-aligner / vad-proport
 
 ---
 
-## 7. Qwen3-ASR 引擎（`--engine qwen3-asr`）
+## 7. Qwen3-ASR 引擎（默认引擎）
 
 先跑自检，它会告诉你缺哪一环：
 
 ```powershell
-.\.venv\Scripts\python -m video2context --engine qwen3-asr --qwen-setup
+.\.venv\Scripts\python -m video2context doctor                         # 本机装了什么、默认用哪个
+.\.venv\Scripts\python -m video2context --engine qwen3-asr --qwen-setup # 只看 Qwen 这一侧
 ```
+
+### 7.0 为什么它用了另一个引擎？
+
+默认引擎是**按本机部署情况**决定的（`--engine` > `V2C_ENGINE` > 本机可用的引擎 > 首选 Qwen）。
+只装了 Whisper 的机器就会用 Whisper —— 这是有意为之，免得用户还要记住自己装了什么。
+
+`doctor` 的最后一行会直接说明：
+
+```
+实际默认引擎         : faster-whisper（本机只部署了 faster-whisper；可用 --engine 覆盖，或写 .env 的 V2C_ENGINE）
+```
+
+想固定成某个引擎，在 `.env` 里写 `V2C_ENGINE=qwen3-asr`。
 
 ### 7.1 `找不到 Qwen3-ASR 的独立环境（.venv-qwen）`
 
-主环境**故意不装 torch**（faster-whisper 走 CTranslate2），所以 Qwen 要单独一个环境：
+主环境**故意不装 torch**（Whisper 引擎走 CTranslate2），所以 Qwen 要单独一个环境：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\setup_qwen.ps1
@@ -383,6 +397,10 @@ python -m video2context a.mp4 --engine qwen3-asr -m models\Qwen3-ASR-0.6B
 
 重装脚本可以直接带参数：`scripts\setup_qwen.ps1 -Torch cu126`（没显卡用 `-Torch cpu`）。
 
+> 顺带一句期望值管理：Qwen3-ASR-1.7B 在 **CPU 上只有 0.5× 实时**（12 秒音频要跑 23.9 秒），
+> 就算 torch 装对了，没显卡也不建议走 Qwen 路线 —— 用 `--engine faster-whisper` 更快。
+> 实测数据见 [deploy.md 第 8 节](deploy.md#8-各设备上的实测速度)。
+
 ### 7.4 字幕时间戳不准 / 所有段落挤在一起
 
 看结果 JSON 里的 `asr.timestamp_source`：
@@ -392,6 +410,11 @@ python -m video2context a.mp4 --engine qwen3-asr -m models\Qwen3-ASR-0.6B
 | `forced-aligner` | 词级时间戳，精确 | 无需处理 |
 | `vad-proportional` | 按说话区间**估算**的时间 | 补下对齐模型（1.8GB） |
 | `none` | 没切出分段 | 识别结果为空，检查音频是否有声音 |
+
+> **只装 Qwen 的机器**（没有 faster-whisper）拿不到 Silero VAD，
+> 所以退化路径会变成"按总时长平均分配"，日志里会说明：
+> 「未安装 faster-whisper，拿不到说话区间（只部署 Qwen 时属正常）」。
+> 这不是故障 —— 但这时**强烈建议**把对齐模型装上，字幕时间才准。
 
 ```powershell
 .\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out models\Qwen3-ForcedAligner-0.6B

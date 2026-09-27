@@ -19,7 +19,12 @@ from media_factory import build_video  # noqa: E402
 
 from video2context.ffmpeg_tools import find_ffmpeg  # noqa: E402
 from video2context.glossary import Glossary, SymbolRepair  # noqa: E402
-from video2context.pipeline import TranscribeOptions, process  # noqa: E402
+from video2context.pipeline import (  # noqa: E402
+    ENGINE_FASTER_WHISPER,
+    ENGINE_QWEN3_ASR,
+    TranscribeOptions,
+    process,
+)
 from video2context.transcriber import Segment, TranscriptionResult  # noqa: E402
 
 DEFAULT_TEXT = "你好，世界。Hello world."
@@ -103,11 +108,19 @@ class PipelineTestCase(unittest.TestCase):
         self.out = self.tmp / self._testMethodName
         self.stub = StubTranscriber()
 
-        def _factory(**kwargs):
-            self.stub.init_kwargs = kwargs  # 记录 pipeline 传给识别器的构造参数
+        def _factory(options, log=None):
+            # 记录 pipeline 传给引擎工厂的参数（引擎选择就发生在这里）
+            self.stub.init_kwargs = {
+                "engine": options.engine,
+                "model": options.model,
+                "device": options.device,
+            }
             return self.stub
 
-        patcher = mock.patch("video2context.pipeline.get_transcriber", side_effect=_factory)
+        # 打补丁的位置是**引擎工厂**而不是某个具体引擎的 get_transcriber：
+        # 引擎会按本机部署情况自动选择，只替换 get_transcriber 的话，
+        # 在装了 .venv-qwen 的开发机上会真的去起 Qwen 子进程（测试直接卡死）。
+        patcher = mock.patch("video2context.pipeline.build_transcriber", side_effect=_factory)
         self.addCleanup(patcher.stop)
         patcher.start()
 
@@ -244,7 +257,11 @@ class PipelineTestCase(unittest.TestCase):
             symbols=[SymbolRepair("右F4", "u(x)"), SymbolRepair("位F4", "v(x)")],
         )
         self.stub.texts = ["u(x) 和 v(x) 都可导"]
-        result = process(self.video, TranscribeOptions(glossary=glossary, output_dir=self.out))
+        result = process(
+            self.video,
+            # 显式指定引擎：默认值会按本机部署情况自适应，测试里必须钉死
+            TranscribeOptions(engine=ENGINE_FASTER_WHISPER, glossary=glossary, output_dir=self.out),
+        )
 
         payload = json.loads(result.json_path.read_text(encoding="utf-8"))
         self.assertIn("glossary", payload)
@@ -259,7 +276,11 @@ class PipelineTestCase(unittest.TestCase):
     def test_glossary_bias_failure_falls_back(self) -> None:
         glossary = Glossary(symbols=[SymbolRepair("右F4", "u(x)")])
         self.stub.texts = ["右F4 如果在 F0 处可倒", "回退之后的普通文本"]
-        result = process(self.video, TranscribeOptions(glossary=glossary, output_dir=self.out))
+        result = process(
+            self.video,
+            # 显式指定引擎：默认值会按本机部署情况自适应，测试里必须钉死
+            TranscribeOptions(engine=ENGINE_FASTER_WHISPER, glossary=glossary, output_dir=self.out),
+        )
 
         payload = json.loads(result.json_path.read_text(encoding="utf-8"))
         verification = payload["glossary"]["verification"]
@@ -279,7 +300,12 @@ class PipelineTestCase(unittest.TestCase):
         with mock.patch("video2context.pipeline.build_glossary_from_scan", return_value=built) as builder:
             result = process(
                 self.video,
-                TranscribeOptions(auto_glossary=True, scan_duration=1.0, output_dir=self.out),
+                TranscribeOptions(
+                    engine=ENGINE_FASTER_WHISPER,
+                    auto_glossary=True,
+                    scan_duration=1.0,
+                    output_dir=self.out,
+                ),
             )
 
         self.assertTrue(builder.called)
@@ -291,6 +317,34 @@ class PipelineTestCase(unittest.TestCase):
         payload = json.loads(result.json_path.read_text(encoding="utf-8"))
         self.assertEqual(payload["glossary"]["source"], "llm")
         self.assertEqual(payload["glossary"]["scan"]["chars"], 4)
+
+    def test_qwen_engine_does_not_rerun_on_bias_failure(self) -> None:
+        """Qwen 引擎不做「偏置失效就回退重跑」—— 重跑要多付一次模型加载，不值。"""
+        glossary = Glossary(symbols=[SymbolRepair("右F4", "u(x)")])
+        self.stub.texts = ["右F4 如果在 F0 处可倒"]
+        result = process(
+            self.video,
+            TranscribeOptions(engine=ENGINE_QWEN3_ASR, glossary=glossary, output_dir=self.out),
+        )
+
+        payload = json.loads(result.json_path.read_text(encoding="utf-8"))
+        verification = payload["glossary"]["verification"]
+        self.assertFalse(verification["fallback_used"])
+        self.assertGreater(verification["wrong_hits"], 0)
+        self.assertEqual(len(self.stub.calls), 1)  # 只跑一次
+
+    def test_qwen_engine_gets_descriptive_context(self) -> None:
+        """Qwen 拿到的是「描述视频里有什么」的完整句子，不是 whisper 那种极短 prompt。"""
+        glossary = Glossary(domain="数学分析", symbols=[SymbolRepair("右F4", "u(x)")])
+        self.stub.texts = ["u(x) 可导"]
+        process(
+            self.video,
+            TranscribeOptions(engine=ENGINE_QWEN3_ASR, glossary=glossary, output_dir=self.out),
+        )
+
+        context = self.stub.transcribe_kwargs["initial_prompt"]
+        self.assertIn("u(x)", context)
+        self.assertFalse(context.startswith("符号："))  # 不是 whisper 的极短写法
 
     def test_glossary_out_file_written(self) -> None:
         glossary = Glossary(domain="数学分析", symbols=[SymbolRepair("右F4", "u(x)")])
