@@ -1,5 +1,6 @@
 # 虚拟环境 / 本地环境
 .venv/
+.venv-qwen/
 .condaenv/
 .tmp/
 

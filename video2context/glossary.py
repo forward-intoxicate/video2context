@@ -187,7 +187,12 @@ class Glossary:
 
     @classmethod
     def from_file(cls, path: str | Path) -> Glossary:
-        """读手写词表：``错形 -> 正确`` 表示还原，单独一行则视为术语。"""
+        """读词表文件，每行三种写法：
+
+        * ``错形 -> 正确`` —— 还原对（"我听到的是错的"）
+        * 含拉丁字母或数学符号 —— **已知正确**的符号（例如从板书/幻灯片里读出来的）
+        * 纯中文 —— 术语
+        """
         text = Path(path).read_text(encoding="utf-8")
         symbols: list[SymbolRepair] = []
         terms: list[str] = []
@@ -198,6 +203,9 @@ class Glossary:
             match = re.split(r"\s*(?:->|=>|→)\s*", line, maxsplit=1)
             if len(match) == 2 and match[0].strip() and match[1].strip():
                 symbols.append(SymbolRepair(wrong=match[0].strip(), right=match[1].strip()))
+            elif _LATIN_RUN.search(line) or any(ch in line for ch in "()'^_=+-"):
+                # 看起来是符号：放"符号"槽位比放"术语"更容易被模型采纳
+                symbols.append(SymbolRepair(wrong="", right=line))
             else:
                 terms.append(line)
         return cls(symbols=symbols, terms=terms, source="file")
