@@ -19,7 +19,7 @@
 | 引擎 | 依赖 | 中文同音词 | 英文 WER | 适合 |
 |---|---|---|---|---|
 | `qwen3-asr`（默认） | 独立环境 + torch，显存 ≥ 6GB | **好**（样例上 0 处同音词错误） | **0.00%** | 中文课程/讲座、术语多的内容 |
-| `faster-whisper` | 轻量，**不需要 torch**，CPU 就能跑 | 一般（`u(x)`→「右F4」） | 2.97% | 没有显卡、想省 3GB、要翻译成英文 |
+| `faster-whisper` | 轻量，**不需要 torch**，CPU 就能跑 | 一般（`u(x)`→「右F4」） | 4.35% | 没有显卡、想省 3GB、要翻译成英文 |
 
 程序会**按你实际装了的引擎来定默认值**：只装了 Whisper 就用 Whisper，只装了 Qwen 就用 Qwen，
 两个都装则优先 Qwen。所以按任意一条路线部署完，直接敲命令就能跑。
@@ -39,9 +39,10 @@
 ## 目录
 
 - [命令怎么敲（先看这个）](#命令怎么敲先看这个)
-- [从 0 部署（各设备 / 各引擎）](#从-0-部署各设备--各引擎)
+- [快速开始：从 0 到跑通](#快速开始从-0-到跑通)
+- [选部署路线（换引擎 / 没显卡 / macOS）](#选部署路线换引擎--没显卡--macos)
 - [这个工程适合谁](#这个工程适合谁)
-- [快速开始](#快速开始)
+- [安装详解](#安装详解)
 - [怎么用](#怎么用)
 - [识别引擎怎么选](#识别引擎怎么选)
 - [领域词表（修同音词/专有名词）](#领域词表修同音词专有名词)
@@ -85,10 +86,227 @@
 
 ---
 
-## 从 0 部署（各设备 / 各引擎）
+## 快速开始：从 0 到跑通
 
-完整的手把手步骤在 **[docs/deploy.md](docs/deploy.md)**（含无显卡、纯 CPU、macOS、
-离线内网、国内加速、磁盘占用与卸载）。这里只给结论表：
+> 下面每一步都给了 **Windows** 与 **Linux / macOS** 两版命令，照着顺序敲即可。
+> 全程只需要 **Python 3.9+** 和 **git** —— ffmpeg 不用单独装（依赖里自带静态版本）。
+
+### 第 0 步 · 确认前置条件
+
+| 检查 | Windows（PowerShell） | Linux / macOS |
+|---|---|---|
+| Python | `python --version` | `python3 --version` |
+| git | `git --version` | `git --version` |
+
+需要 Python ≥ 3.9（**3.11 / 3.12 / 3.13 最稳**；网页界面需要 3.10+）。
+Linux 上如果 `python3 -m venv` 报 `ensurepip is not available`，先 `sudo apt install python3-venv`。
+
+### 第 1 步 · 克隆仓库
+
+```bash
+git clone https://github.com/forward-intoxicate/video2context.git
+cd video2context
+```
+
+两个平台命令相同。
+
+### 第 2 步 · 一键装环境 + 下模型
+
+```powershell
+# Windows（默认部署 Qwen3-ASR，并把模型一起下好）
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
+```
+```bash
+# Linux / macOS
+bash scripts/setup.sh
+```
+
+这个脚本会自动做完 5 件事：
+
+1. 建主环境 `.venv`（只装公共依赖：自带 ffmpeg 的 `imageio-ffmpeg`）；
+2. 建独立环境 `.venv-qwen`（torch + transformers + qwen-asr，约 3GB）；
+3. 装对应 CUDA 版本的 torch（PyPI 上是 CPU 版，必须走 PyTorch 官方索引）；
+4. 从魔搭镜像下载**两个**模型：识别模型 4GB + 强制对齐模型 1.8GB（可断点续传）；
+5. 跑一次自检并打印结果。
+
+**总体积约 9GB，时间基本都花在下载上**（国内走镜像一般十几分钟）。
+
+**如果你的机器不一样**：
+
+```powershell
+# Windows：没有 N 卡 / 想省 3GB torch → 改走 Whisper 路线（约 4GB，纯 CPU 也能跑）
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Engine whisper
+
+# Windows：只想先建环境，模型稍后再下
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -SkipModels
+```
+```bash
+# Linux / macOS 同理
+bash scripts/setup.sh whisper            # 只装 Whisper
+SKIP_MODELS=1 bash scripts/setup.sh      # 只建环境，不下模型
+TORCH_INDEX=cpu bash scripts/setup.sh    # macOS / 无 N 卡：装 CPU 版 torch
+```
+
+### 第 3 步 ·（可选）单独补下模型
+
+第 2 步已经下好了，**正常情况下跳过这一步**。
+只有在用了 `-SkipModels`、或者下载中断想补下时才需要 —— 下载器可反复执行，每次接着上次的进度继续：
+
+```powershell
+# Windows
+.\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out models\Qwen3-ASR-1.7B
+.\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out models\Qwen3-ForcedAligner-0.6B
+```
+```bash
+# Linux / macOS
+./.venv/bin/python scripts/download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out models/Qwen3-ASR-1.7B
+./.venv/bin/python scripts/download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out models/Qwen3-ForcedAligner-0.6B
+```
+
+> Whisper 路线换成：`scripts\download_model.py large-v3 --source modelscope --out models\faster-whisper-large-v3`
+
+### 第 4 步 · 确认环境就绪
+
+```powershell
+# Windows
+.\.venv\Scripts\python -m video2context doctor
+```
+```bash
+# Linux / macOS
+./.venv/bin/python -m video2context doctor
+```
+
+关键几行应该长这样：
+
+```
+  ── 识别引擎 ──────────────────────────────
+  qwen3-asr            : 就绪
+  faster-whisper       : 未部署 → pip install -r requirements.txt
+  Qwen 解释器          : E:\...\video2context\.venv-qwen\Scripts\python.exe
+  Qwen 识别模型        : E:\...\video2context\models\Qwen3-ASR-1.7B
+  Qwen 对齐模型        : E:\...\models\Qwen3-ForcedAligner-0.6B（字幕时间精确到词）
+  实际默认引擎         : qwen3-asr（本机只部署了 qwen3-asr；可用 --engine 覆盖…）
+  CUDA 设备数          : 1
+```
+
+**判断标准**：引擎显示「就绪」、两个模型路径指向 `models\` 下的**本地目录**（不是仓库名）、
+`CUDA 设备数` ≥ 1。哪一项不对就见 [docs/troubleshooting.md](docs/troubleshooting.md)。
+
+### 第 5 步 · 用仓库自带的参考视频试跑
+
+不用先找自己的素材 —— 仓库里带了示例视频：
+
+```powershell
+# Windows
+.\.venv\Scripts\python -m video2context samples\demo_zh_math.mp4 --language zh -f json,txt,srt,vtt
+```
+```bash
+# Linux / macOS
+./.venv/bin/python -m video2context samples/demo_zh_math.mp4 --language zh -f json,txt,srt,vtt
+```
+
+42 秒的中文数学课样例。期望看到（首次运行会含模型加载的几秒）：
+
+```
+  [1/3] 探测媒体信息：demo_zh_math.mp4
+        时长 00:00:42（41.8s）｜格式 mov,mp4,m4a,3gp,3g2,mj2｜视频轨 有
+  [2/3] 提取音频 → 16000Hz 单声道 wav
+        音频就绪：audio.wav（1.3 MB）
+  提示：--engine qwen3-asr 下未指定 --model，自动选用 Qwen 默认模型
+  [3/3] 语音识别（引擎 qwen3-asr，模型 ...\models\Qwen3-ASR-1.7B，任务 transcribe）
+        强制对齐模型：...\models\Qwen3-ForcedAligner-0.6B（字幕时间精确到词）
+        按时间戳切出 7 段（强制对齐，时间精确到词）
+  语言=Chinese 分段=7 音频时长=00:00:42 处理耗时=5.5s 实时率=0.1326
+  -> JSON output\demo_zh_math.json
+  -> TXT  output\demo_zh_math.txt
+  -> SRT  output\demo_zh_math.srt
+  -> VTT  output\demo_zh_math.vtt
+```
+
+**看到最后那 4 行 `-> ...` 就说明整条链路通了。**
+耗时随机器不同（GPU 上约 5～9 秒；CPU 上会明显更慢），
+关键是 **`分段=7`** —— 它正好对应样例稿子的 7 句，说明切句和时间戳都对上了。
+
+仓库里另外还有 3 个样例（英文技术内容、中文日常口语、6 分半真人朗读），
+清单和更多示例命令见 **[samples/README.md](samples/README.md)**。
+
+想对比两个引擎的英文准确率（需要路线 C，两个引擎都装了）：
+
+```powershell
+# Windows
+.\.venv\Scripts\python -m video2context samples\demo_en_ml.mp4 --language en -f json,txt -n en-qwen
+.\.venv\Scripts\python -m video2context samples\demo_en_ml.mp4 --language en -f json,txt -n en-whisper `
+    --engine faster-whisper --model-dir models\faster-whisper-large-v3
+.\.venv\Scripts\python experiments\wer_report.py samples\demo_en_ml.transcript.txt output\en-qwen.txt output\en-whisper.txt
+```
+```bash
+# Linux / macOS
+./.venv/bin/python -m video2context samples/demo_en_ml.mp4 --language en -f json,txt -n en-qwen
+./.venv/bin/python -m video2context samples/demo_en_ml.mp4 --language en -f json,txt -n en-whisper \
+    --engine faster-whisper --model-dir models/faster-whisper-large-v3
+./.venv/bin/python experiments/wer_report.py samples/demo_en_ml.transcript.txt output/en-qwen.txt output/en-whisper.txt
+```
+
+实测 WER：Qwen3-ASR **0.00%**，faster-whisper large-v3 **4.35%**。
+
+### 第 6 步 · 对一下答案
+
+```powershell
+# Windows
+type output\demo_zh_math.txt
+```
+```bash
+# Linux / macOS
+cat output/demo_zh_math.txt
+```
+
+再打开 `samples/demo_zh_math.transcript.txt`（逐句稿子）对照。
+识别结果应该和稿子**几乎逐字一致**，差异只会在标点上（逗号取舍、`？` 写成 `。`），
+**不该有错字**——原因见 [samples/README.md](samples/README.md#识别结果和稿子对不上先看差在哪一类)。
+
+### 第 7 步 · 换成自己的视频
+
+```powershell
+# Windows
+.\.venv\Scripts\python -m video2context "D:\videos\我的视频.mp4" --language zh -f json,srt
+```
+```bash
+# Linux / macOS
+./.venv/bin/python -m video2context ~/videos/my_video.mp4 --language zh -f json,srt
+```
+
+结果落在 `output/`（`我的视频.json` / `.srt`）。想用网页界面：
+
+```powershell
+# Windows
+.\.venv\Scripts\python -m video2context webui
+```
+```bash
+# Linux / macOS
+./.venv/bin/python -m video2context webui
+```
+
+浏览器打开 <http://127.0.0.1:7860>，把视频拖进去即可。
+
+### 卡在哪一步了？
+
+| 现象 | 原因 / 去哪看 |
+|---|---|
+| `未找到 ffmpeg` | 用错了 Python（没激活 `.venv`）→ [命令怎么敲](#命令怎么敲先看这个)、[troubleshooting 1.5](docs/troubleshooting.md#15-敲-python-报未找到-ffmpeg缺少-faster-whisper-多半是跑错了-python) |
+| `找不到 Qwen3-ASR 的独立环境（.venv-qwen）` | 第 2 步没跑或失败了 → 重跑安装脚本、[troubleshooting 7.1](docs/troubleshooting.md#71-找不到-qwen3-asr-的独立环境venv-qwen) |
+| `qwen3-asr : 未部署` | 同上 |
+| `页面文件太小` / `CUDA out of memory` | 内存/显存不够 → [troubleshooting 7.2](docs/troubleshooting.md#72-页面文件太小无法完成操作--cuda-out-of-memory--0xc0000005) |
+| 模型下载卡住 / 很慢 | 用自带下载器走魔搭 → [troubleshooting 3.1](docs/troubleshooting.md#31-下载卡住进度条不动) |
+| 字幕时间明显不对 | 看 JSON 里的 `asr.timestamp_source` → [troubleshooting 7.4](docs/troubleshooting.md#74-字幕时间戳不准--所有段落挤在一起) |
+| 其它 | [docs/troubleshooting.md](docs/troubleshooting.md) 全文 |
+
+---
+
+## 选部署路线（换引擎 / 没显卡 / macOS）
+
+上面走的是**默认路线**（Qwen3-ASR）。想换引擎或设备不同，看这张表；
+完整的手把手步骤在 **[docs/deploy.md](docs/deploy.md)**
+（含无显卡、纯 CPU、macOS、离线内网、国内加速、磁盘占用与卸载）：
 
 | 路线 | 适合 | 磁盘 | Windows | macOS / Linux |
 |---|---|---|---|---|
@@ -124,100 +342,6 @@ Qwen 不输出时间戳，缺了它字幕时间会掉到最粗的一档（详见
 需要专业级说话人分离/精确标点（可自行接入，见[扩展方向](CONTRIBUTING.md)）。
 
 **不用懂 AI**：装好之后就是一条命令的事。默认参数已经调到"中文长视频要精度"的档位。
-
----
-
-## 快速开始
-
-### 0. 你需要什么
-
-| | 最低 | 推荐 |
-|---|---|---|
-| 系统 | Windows 10/11、macOS、Linux | 同左 |
-| Python | 3.9（网页界面需 3.10+） | 3.11 / 3.12 / 3.13 |
-| 内存 | 8 GB（只跑 Whisper） | 16 GB |
-| 显卡 | 不需要（Whisper 可纯 CPU；Qwen 需要 N 卡） | NVIDIA，显存 ≥ 6GB |
-| 磁盘 | 4 GB | 9 GB（Qwen：环境 3GB + 模型 6GB） |
-
-> **不需要单独安装 ffmpeg**：依赖 `imageio-ffmpeg` 自带的静态 ffmpeg，装完即可用。
-
-### 1. 装环境（Windows）
-
-```powershell
-git clone https://github.com/forward-intoxicate/video2context.git
-cd video2context
-
-# 一键脚本：默认部署 Qwen3-ASR（推荐路线），模型也一起下好（约 6GB）
-powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
-
-# 只想先建环境、模型以后再下
-powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -SkipModels
-
-# 没有 N 卡 / 想省 3GB torch → 只装 Whisper
-powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Engine whisper
-```
-
-### 也可以在 macOS / Linux 上装
-
-```bash
-git clone https://github.com/forward-intoxicate/video2context.git
-cd video2context
-bash scripts/setup.sh                    # 默认 Qwen3-ASR
-bash scripts/setup.sh whisper            # 只装 Whisper
-TORCH_INDEX=cpu bash scripts/setup.sh    # macOS 一律用 cpu
-```
-
-### 2. 转写
-
-```powershell
-# Windows
-.\.venv\Scripts\python -m video2context "D:\videos\我的视频.mp4"
-```
-```bash
-# macOS / Linux
-./.venv/bin/python -m video2context ~/videos/my_video.mp4
-```
-
-结果落在 `output/我的视频.json`（如需字幕加 `-f json,srt`）。
-
-### 3. 或者用网页界面（拖拽即用）
-
-```powershell
-.\.venv\Scripts\python -m video2context webui      # 浏览器打开 http://127.0.0.1:7860
-```
-
-### 4. 拿现成的样例试跑
-
-仓库里带了 4 个可以直接跑的样例（详见 **[samples/README.md](samples/README.md)**）：
-
-| 样例 | 时长 | 内容 |
-|---|---|---|
-| `samples/demo_zh_math.mp4` | 42s | 中文 · 导数运算法则（含 `u`/`v` 这类中英混排符号） |
-| `samples/demo_en_ml.mp4` | 40s | 英文 · 梯度下降（`Adam`、`RMSProp` 等术语密集） |
-| `samples/demo_zh_daily.mp4` | 29s | 中文 · 日常口语（停顿多，看 VAD 与分段） |
-| `samples/chinese_speech_sample.mp4` | 6:30 | 中文真人朗读（公共领域），长音频与提示词效果 |
-
-前三个是**离线合成的语音**（`scripts/make_samples.py` 生成，无第三方素材），第四个是真人录音。
-每个 `demo_*` 都配了 `demo_*.transcript.txt` 逐句稿子，可以对着检查识别结果。
-
-```powershell
-# 最简：一条命令出文字（注意开头的 .\.venv\Scripts\python，见「命令怎么敲」）
-.\.venv\Scripts\python -m video2context samples\demo_zh_math.mp4
-
-# 出全套产物（JSON + 文本 + SRT + VTT）
-.\.venv\Scripts\python -m video2context samples\demo_zh_math.mp4 --language zh -f json,txt,srt,vtt
-
-# 只跑前 10 秒试参数，并实时打印每句
-.\.venv\Scripts\python -m video2context samples\demo_zh_math.mp4 --duration 10 --stream
-
-# 英文样例：两个引擎各跑一遍，再算 WER
-.\.venv\Scripts\python -m video2context samples\demo_en_ml.mp4 --language en -f json,txt -n en-qwen
-.\.venv\Scripts\python -m video2context samples\demo_en_ml.mp4 --language en -f json,txt -n en-whisper `
-    --engine faster-whisper --model-dir models\faster-whisper-large-v3
-.\.venv\Scripts\python experiments\wer_report.py samples\demo_en_ml.transcript.txt output\en-qwen.txt output\en-whisper.txt
-```
-
-结果默认落在 `output\`。SRT / VTT 可以直接丢进播放器或剪辑软件。
 
 ---
 
@@ -461,7 +585,7 @@ python -m video2context webui --engine faster-whisper
 | CPU | 0.5× 实时（比实时慢，不推荐） | 可用（`small` 约 6 倍实时） |
 | 中文标点 | 更完整 | 模型自带，尚可 |
 | 中文同音词 | **样例上 0 处** | `u(x)`→「右F4」这类错误多 |
-| 英文 WER | **0.00%** | 2.97% |
+| 英文 WER | **0.00%** | 4.35% |
 | 翻译成英文 | 不支持（只做原语言转写） | 支持（`--task translate`） |
 
 **建议**：
@@ -666,21 +790,26 @@ python -m video2context 课程.mp4 --engine qwen3-asr --qwen-aligner off        
 
 ### Qwen3-ASR（默认引擎）
 
-| 素材 | 设备 | 加载 | 推理 | 相对实时 |
-|---|---|---|---|---|
-| `samples/formula.mp4`（73s 中文数学课） | GPU bf16 + 对齐模型 | 6.6s | 5.8s | **12.5×** |
-| 英文测试素材（42s） | GPU bf16 + 对齐模型 | 10.9s | 7.0～8.8s | 4.8～6.0× |
-| 英文测试素材（12s） | **CPU**（32 线程） | 1.4s | 23.9s | **0.5×**（比实时慢一倍） |
+素材都用仓库里自带的样例，命令见[快速开始](#快速开始从-0-到跑通)，可以自己复现：
 
-> GPU 上 1 小时视频约 5 分钟。CPU 上**比实时还慢**（1 小时视频要 2 小时），
-> 所以没有 N 卡请走 Whisper 路线。
+| 素材 | 设备 | 推理耗时 | 相对实时 |
+|---|---|---|---|
+| `samples/demo_zh_math.mp4`（41.8s 中文） | GPU bf16 + 对齐模型 | 5.5s | **7.6×** |
+| `samples/demo_en_ml.mp4`（40.4s 英文） | GPU bf16 + 对齐模型 | 6.2s | **6.5×** |
+| `samples/demo_zh_daily.mp4`（29.3s 中文） | GPU bf16 + 对齐模型 | 4.3s | **6.9×** |
+| 12 秒英文片段 | **CPU**（32 线程） | 23.9s | **0.5×**（比实时还慢） |
 
-**识别质量对比**（同一段音频，逐字核对）：
+> 另外一次 73 秒中文长素材（未提交仓库）跑到过 **12.5×** —— 音频越长越接近稳态。
+> **模型加载另算**，本地模型每次 6.6～10.9s；音频越长这部分越无所谓。
+> GPU 上 1 小时视频约 5～10 分钟。CPU 上**比实时还慢**，所以没有 N 卡请走 Whisper 路线。
+
+**识别质量对比**（同一段音频、逐字核对，素材都在仓库里）：
 
 | 素材 | `Qwen3-ASR-1.7B`（默认） | `faster-whisper` large-v3 |
 |---|---|---|
-| 中文数学课 73s | `u(x)`、`v(x)`、`导数` **全对**，标点完整 | `u(x)`→「右」×4、`v(x)`→「位」×4、`倒/求倒/求到` 混乱 ×5，**无标点** |
-| 英文 42s（101 词，WER） | **0.00%** | 2.97%（`Adam`→`Atom`、`RMSProp`→`RMS Prop`） |
+| 英文 `demo_en_ml.mp4`（92 词，**WER**） | **0.00%** | **4.35%**（`Adam`→`Atom`、`RMSProp`→`RMS Prop`、`Adagrad`→`Atigrid`） |
+| 中文 `demo_zh_math.mp4`（41.8s） | 「求导/可导」**全对**，标点完整 | 「求导」写成「**球倒**」，标点全变逗号 |
+| 中文 `samples/formula.mp4`（73s，未提交） | `u(x)`、`v(x)`、`导数` **全对**，标点完整 | `u(x)`→「右」×4、`v(x)`→「位」×4、`倒/求倒/求到` 混乱 ×5，**无标点** |
 
 > 中文那段的遗留小瑕疵：讲师口中的「x 零」「u1 x」会被写成 `x零`、`u1x`。
 > 这是**把读法直接转写**的结果（讲师确实念作"x 零"），不是听错；

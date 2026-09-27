@@ -63,7 +63,7 @@ powershell -ExecutionPolicy Bypass -File scripts\setup_qwen.ps1
 ### 实验结果
 
 * 中文数学课 73s：`u(x)` / `v(x)` / `导数` 全对且标点完整（large-v3 为右/位/倒 ×13 处、无标点）
-* 英文 42s（101 词）：WER **0.00%**（large-v3 为 2.97%）
+* 英文 `samples/demo_en_ml.mp4`（92 词）：WER **0.00%**（large-v3 为 4.35%）
 * 速度：1.7B + 对齐，73s 中文实测 12.5× 实时（推理 5.8s + 加载 6.6s）
 
 原始数据与完整对照见 `qwen3_asr_result.md`。

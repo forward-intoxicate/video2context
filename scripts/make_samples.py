@@ -407,6 +407,11 @@ def build_video(
     _, fontsize = fit_text(sample.lines, (960, 540))
     filters: list[str] = []
 
+    # 给背景一个**明确时长**。用无限长的 color 源 + -shortest 会多出几秒尾巴
+    # （实测多 2～3 秒静音黑屏，容器 Duration 比音频实际长度长），
+    # 所以这里直接按音轨长度截断。
+    total = timings[-1][1] if timings else 0.0
+
     # 顶部常驻标题。标题里一定有中文，所以**必须**用能画中文的字体，
     # 否则在英文样例上（正文用 Arial）标题会整行变成豆腐块。
     title_font = cjk_font or font
@@ -447,6 +452,9 @@ def build_video(
                 f":enable='between(t,{start},{end})'"
             )
 
+    color_source = f"color=c={BACKGROUND}:s={VIDEO_SIZE}:r={VIDEO_FPS}"
+    if total > 0:
+        color_source += f":d={total:.3f}"
     args = [
         ffmpeg,
         "-y",
@@ -455,7 +463,7 @@ def build_video(
         "-f",
         "lavfi",
         "-i",
-        f"color=c={BACKGROUND}:s={VIDEO_SIZE}:r={VIDEO_FPS}",
+        color_source,
         "-i",
         str(audio),
     ]
