@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: ["**"]   # 所有分支都跑，特性分支不必等 PR 就能拿到反馈
   pull_request:
   workflow_dispatch:
 
