@@ -15,6 +15,13 @@ pip install -r requirements-dev.txt  # 核心依赖 + pytest + ruff
 pip install -r requirements-web.txt  # 改网页界面时才需要
 ```
 
+改 Qwen 引擎时才需要独立环境（约 3GB，主环境刻意不装 torch）：
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts\setup_qwen.ps1   # Windows
+bash scripts/setup_qwen.sh                                        # macOS / Linux
+```
+
 以可编辑模式安装（可选，装完可以直接用 `video2context` 命令）：
 
 ```bash
@@ -25,7 +32,7 @@ video2context doctor
 ## 2. 测试策略
 
 ```bash
-python -m unittest discover -s tests -v   # 28 项，约 2 秒
+python -m unittest discover -s tests -v   # 87 项，约 2 秒
 pytest                                      # 同样的用例（pyproject 已配好）
 ```
 
@@ -35,9 +42,11 @@ pytest                                      # 同样的用例（pyproject 已配
 |---|---|---|
 | `tests/test_units.py` | 时间戳格式化、SRT/VTT/TXT 序列化、参数解析、OOM 判定、ffmpeg 探测与抽音轨 | ffmpeg（自动跳过） |
 | `tests/test_pipeline.py` | 完整流水线：JSON schema、四种输出格式、命名避让、临时音频清理、错误路径 | ffmpeg |
+| `tests/test_glossary.py` | 词表解析、prompt/context 拼装、符号命中评分、回退判定 | 无 |
+| `tests/test_qwen_engine.py` | Qwen 引擎：语种归一化、时间戳→下标映射、**切句**、无对齐模型时的比例分配、引擎选择、解释器探测 | 无 |
 | `tests/media_factory.py` | 用 ffmpeg lavfi 现场合成测试视频/音频 | ffmpeg |
 
-两个关键手法：
+三个关键手法：
 
 1. **现场造素材**：`tests/media_factory.py` 用 `lavfi` 生成正弦波与色块，不往仓库塞二进制文件。
 2. **替身识别器**：`tests/test_pipeline.py` 的 `StubTranscriber` 接口与真实 `Transcriber` 一致，
@@ -47,23 +56,41 @@ pytest                                      # 同样的用例（pyproject 已配
 patcher = mock.patch("video2context.pipeline.get_transcriber", side_effect=_factory)
 ```
 
+3. **纯函数化 Qwen 的切句逻辑**：`group_time_stamps()` / `distribute_sentences()` 只吃
+   `(文本, 时间戳列表)`，所以能用几行合成数据把边界情况测透，不需要加载 4GB 模型：
+
+```python
+segs = group_time_stamps("Hello world. This is, a test!", EN_STAMPS)   # token 是去标点的
+assert [s.text for s in segs] == ["Hello world.", "This is, a test!"]
+```
+
 > 注意打补丁的位置是 `video2context.pipeline.get_transcriber`（导入到使用处的名字），
 > 不是 `video2context.transcriber.get_transcriber`。
+> Qwen 引擎同理：要拦的是 `video2context.pipeline.build_transcriber`。
 
 ## 3. 代码结构
 
 ```
 video2context/
 ├─ ffmpeg_tools.py   媒体层：定位 ffmpeg、探测、抽音轨（无第三方依赖，纯 subprocess）
-├─ transcriber.py    识别层：模型加载、设备选择、显存预检、降级、缓存
-├─ pipeline.py       编排层：把上面两层串成"输入文件 → 结构化结果"
+├─ transcriber.py    识别层 A：faster-whisper —— 模型加载、设备选择、显存预检、降级、缓存
+├─ qwen_engine.py    识别层 B：Qwen3-ASR —— 环境探测、子进程调度、时间戳切句
+├─ _qwen_worker.py   识别层 B 的子进程入口（在 .venv-qwen 里跑，只依赖标准库 + torch）
+├─ glossary.py       词表层：符号还原、prompt/context 拼装、偏置评分
+├─ llm.py            大模型客户端（OpenAI 兼容，urllib 实现，零新依赖）
+├─ pipeline.py       编排层：把上面几层串成"输入文件 → 结构化结果"，并选择引擎
 ├─ writers.py        输出层：JSON / TXT / SRT / VTT
 ├─ cli.py            交互层：命令行
 └─ webui.py          交互层：Gradio
 ```
 
-依赖方向是单向的：`cli/webui → pipeline → {ffmpeg_tools, transcriber, writers}`。
+依赖方向是单向的：`cli/webui → pipeline → {ffmpeg_tools, transcriber, qwen_engine, writers}`。
 **不要让下层反过来 import 上层**，也不要让 `transcriber.py` 依赖 `pipeline.py`。
+
+`_qwen_worker.py` 是个特例：它**刻意不 import 主工程任何模块**（那会连带导入
+faster-whisper，而它跑在没装 faster-whisper 的 `.venv-qwen` 里）。它还额外做了一件事 ——
+把脚本自身所在目录从 `sys.path` 里摘掉，否则 `video2context/` 下的模块会**遮住**
+site-packages 里的同名包（这个坑真实踩过：曾经的 `qwen_asr.py` 遮住了上游 `qwen_asr` 包）。
 
 ### 数据契约
 
@@ -72,10 +99,18 @@ Segment(id, start, end, text, avg_logprob, no_speech_prob, temperature, compress
 TranscriptionResult(segments, text, language, language_probability, duration, duration_after_vad,
                     task, model, device, compute_type, batch_size, vad_filter, beam_size,
                     initial_prompt, condition_on_previous_text, temperature,
-                    elapsed_seconds, model_load_seconds)
+                    elapsed_seconds, model_load_seconds, engine, extra)
 ```
 
-`TranscriptionResult.to_dict()` 直接变成 JSON 里的 `asr` 段。
+`TranscriptionResult.to_dict()` 直接变成 JSON 里的 `asr` 段；`extra` 会被平铺进去，
+留给各引擎放自己的元信息（Qwen 用它写 `aligner` / `timestamp_source` / `context_effect`）。
+
+两个约定：
+
+* `engine` 字段标明结果出自哪个引擎（`faster-whisper` / `qwen3-asr`），方便对比与溯源；
+* 引擎**用不到**的字段不要硬编一个看似生效的值 —— 例如 Qwen 没有 VAD 与束搜索概念，
+  `vad_filter` / `beam_size` 会被置成 `False` / `0`，而不是沿用 whisper 的默认值。
+
 换识别引擎时，只要保证这两个类型不变，上层全部无需修改。
 
 ## 4. 常见改动怎么做
@@ -95,11 +130,21 @@ TranscriptionResult(segments, text, language, language_probability, duration, du
 3. `tests/test_units.py` 加断言，`tests/test_pipeline.py::test_all_output_formats` 加进去；
 4. 更新 README 的参数表与输出说明。
 
-### 4.3 换识别引擎
+### 4.3 换识别引擎 / 加一个新引擎
 
-参照 [docs/models.md](models.md) 的「换成 FunASR / SenseVoice」一节：实现一个类，方法签名与
-`Transcriber.transcribe()` 一致，返回 `TranscriptionResult`；
-然后在 `get_transcriber()` 里按 `--model` 或新参数分发。
+**已经在做的范例**：`--engine qwen3-asr` 就是按这个套路加进来的，可以照抄：
+
+1. 写一个类，方法签名与 `Transcriber.transcribe()` 一致，返回 `TranscriptionResult`；
+   `__init__` 多出来的参数用 `**_ignored` 兜住，这样上层换引擎时不用改调用点；
+2. 在 `pipeline.build_transcriber()` 里按 `opts.engine` 分发，并把它加进 `ENGINE_CHOICES` / `ENGINE_ALIASES`；
+3. `cli.py` 加 `--engine` 与引擎私有参数，同步 `TranscribeOptions` 字段；
+4. 如果新引擎**没有时间戳**，必须自己造分段（参考 `qwen_engine.group_time_stamps()` 与
+   `distribute_sentences()`），否则 SRT/VTT 会退化成一条巨型字幕；
+5. 补测试：切句这类纯函数直接测（`tests/test_qwen_engine.py`）；引擎分发用
+   `build_transcriber()` 断言返回类型。
+
+只换 Whisper 家族之外的实现（FunASR/SenseVoice）同样适用，见
+[docs/models.md](models.md) 的「换成 FunASR / SenseVoice」一节。
 
 ### 4.4 调整 VAD / 解码默认值
 
@@ -108,6 +153,16 @@ TranscriptionResult(segments, text, language, language_probability, duration, du
 ```bash
 python -m video2context samples/chinese_speech_sample.mp4 --model-dir models/faster-whisper-large-v3 -o /tmp/after --overwrite
 # 关注：segments 数量、总耗时、文本是否正确
+```
+
+### 4.5 调 Qwen 的切句规则
+
+`qwen_engine.group_time_stamps()` 的 `max_chars` / `max_duration` / `gap` 阈值决定字幕长短。
+改完建议拿真实素材肉眼检查，并确认**拼接结果仍等于原文**：
+
+```python
+segs = group_time_stamps(text, stamps)
+assert "".join(s.text for s in segs).replace(" ", "") == text.replace(" ", "")   # 不该丢字
 ```
 
 ## 5. 提交前检查清单
@@ -135,13 +190,17 @@ python -m video2context doctor              # 环境自检正常
 
 ## 7. CI
 
-`.github/workflows/ci.yml` 做两件事：
+`.github/workflows/ci.yml` 做三件事：
 
 - **test**：矩阵 `ubuntu(3.9, 3.13) / windows(3.11) / macos(3.11)`，
-  装 `requirements.txt`（不含 gradio 与 CUDA 库）后跑全部单元测试 + `doctor`；
-- **lint**：`ruff check`。
+  装 `requirements.txt`（不含 gradio、CUDA 库与 Qwen 的 torch）后跑全部单元测试 + `doctor`；
+- **lint**：`ruff check`、`check_docs.py`、`check_secrets.py`；
+- **PowerShell 编码校验**：`scripts/*.ps1` 必须以 **UTF-8 BOM** 开头
+  （Windows PowerShell 5.1 会按 GBK 解析无 BOM 的 UTF-8，中文会被截断），并检查语法。
+  **新增 `.ps1` 记得同时加进这个列表**。
 
 CI 里**不需要**显卡、模型或 API Key —— 这正是测试设计成"离线替身"的收益。
+Qwen 引擎的测试同样不碰 torch：切句与分配都是纯函数。
 
 ## 8. 代码风格
 

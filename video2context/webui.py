@@ -7,8 +7,37 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .ffmpeg_tools import format_hms, format_hms_ms
-from .pipeline import TranscribeOptions, process
+from .pipeline import (
+    ENGINE_FASTER_WHISPER,
+    ENGINE_QWEN3_ASR,
+    TranscribeOptions,
+    is_qwen_engine,
+    process,
+)
 from .transcriber import DEFAULT_MODEL, LANGUAGE_CHOICES, MODEL_CHOICES
+
+#: 界面上的引擎选项（标签 → 引擎标识）。标签里带上取舍，省得用户去翻文档。
+ENGINE_LABELS: tuple[tuple[str, str], ...] = (
+    ("faster-whisper（默认，无需 torch，CPU 也能跑）", ENGINE_FASTER_WHISPER),
+    ("qwen3-asr（中文同音词/符号更准，需独立环境）", ENGINE_QWEN3_ASR),
+)
+
+#: 两个引擎各自的默认模型（界面里作为下拉框的默认值）
+DEFAULT_MODEL_BY_ENGINE = {
+    ENGINE_FASTER_WHISPER: DEFAULT_MODEL,
+    ENGINE_QWEN3_ASR: "models/Qwen3-ASR-1.7B",
+}
+
+
+def _engine_value(label_or_id: Optional[str]) -> str:
+    """把界面上的引擎标签还原成引擎标识；认不出就退回默认引擎。"""
+    if not label_or_id:
+        return ENGINE_FASTER_WHISPER
+    value = str(label_or_id).strip()
+    for label, engine in ENGINE_LABELS:
+        if value == label:
+            return engine
+    return value
 
 
 def _ensure_gradio_temp() -> None:
@@ -51,14 +80,22 @@ def build_demo(
     default_model: str = DEFAULT_MODEL,
     default_device: str = "auto",
     output_dir: str = "output",
+    default_engine: str = ENGINE_FASTER_WHISPER,
 ):
     """构建 Gradio 界面对象（同时兼容 Gradio 5.x / 6.x）。"""
     import gradio as gr
 
     copy_kwargs = _textbox_extra_kwargs(gr)
+    # 下拉框的 value 必须是 choices 里的某一项，所以认不出就退回第一项（默认引擎）
+    default_engine_id = _engine_value(default_engine)
+    default_engine_label = next(
+        (label for label, engine in ENGINE_LABELS if engine == default_engine_id),
+        ENGINE_LABELS[0][0],
+    )
 
     def run_job(
         file_path: Optional[str],
+        engine_label: str,
         model: str,
         language: str,
         task_label: str,
@@ -72,9 +109,23 @@ def build_demo(
         if not file_path:
             raise gr.Error("请先上传一个视频或音频文件")
 
+        engine = _engine_value(engine_label)
         task = "translate" if str(task_label).startswith("翻译") else "transcribe"
+        if is_qwen_engine(engine) and task == "translate":
+            raise gr.Error(
+                "Qwen3-ASR 只做原语言转写，不支持翻译。\n"
+                "请把「任务」改回转写，或把「识别引擎」换成 faster-whisper。"
+            )
+
+        chosen_model = (model or "").strip() or default_model
+        # 界面上的模型下拉框列的是 Whisper 家族；切到 Qwen 时若没手动改过，
+        # 塞进去的会是 Whisper 的默认名，交给内部按引擎自动选（pipeline 认得这种情况）。
+        if is_qwen_engine(engine) and chosen_model == DEFAULT_MODEL:
+            chosen_model = ""
+
         options = TranscribeOptions(
-            model=(model or default_model).strip() or default_model,
+            engine=engine,
+            model=chosen_model or DEFAULT_MODEL_BY_ENGINE.get(engine, DEFAULT_MODEL),
             device=device or default_device,
             compute_type=(compute_type or "").strip() or None,
             language=_language_value(language),
@@ -106,15 +157,17 @@ def build_demo(
         ]
         probability = asr.get("language_probability")
         confidence = f"（置信度 {probability:.2f}）" if isinstance(probability, (int, float)) else ""
-        status = f"**完成**｜检测语言 `{asr.get('language')}`{confidence}"
+        status = f"**完成**｜引擎 `{asr.get('engine', '?')}`｜检测语言 `{asr.get('language')}`{confidence}"
         status += (
             f"｜分段 {asr['segments_count']}"
             f"｜音频时长 {format_hms(asr['duration'])}"
             f"｜处理耗时 {asr['elapsed_seconds']:.1f}s"
             f"｜设备 {asr['device']}/{asr['compute_type']}"
-            f"｜实时率 {asr['realtime_factor']:.2f}\n\n"
-            f"结果文件：`{result.json_path}`"
+            f"｜实时率 {asr['realtime_factor']:.2f}"
         )
+        if asr.get("timestamp_source") == "vad-proportional":
+            status += "\n\n⚠️ 没有找到强制对齐模型，字幕时间是**估算**的（见 docs/troubleshooting.md 7.4）"
+        status += f"\n\n结果文件：`{result.json_path}`"
 
         json_path = result.outputs.get("json")
         return status, result.text, rows, (str(json_path) if json_path else None), result.payload
@@ -122,7 +175,7 @@ def build_demo(
     with gr.Blocks(title="video2context · 视频转文字") as demo:
         gr.Markdown(
             "# video2context · 视频转文字\n"
-            "上传视频（中文或英文）→ 自动抽取音频 → 本地 faster-whisper 识别 → 输出 JSON / 文本 / 字幕。"
+            "上传视频（中文或英文）→ 自动抽取音频 → 本地识别 → 输出 JSON / 文本 / 字幕。"
             "全程本地运行，视频不出本机。"
         )
         with gr.Row():
@@ -132,12 +185,18 @@ def build_demo(
                     file_types=["video", "audio"],
                     type="filepath",
                 )
+                engine_in = gr.Dropdown(
+                    choices=[label for label, _ in ENGINE_LABELS],
+                    value=default_engine_label,
+                    label="识别引擎",
+                    info="中文课程/讲座（有公式、术语）建议选 qwen3-asr；没显卡或想省事就用默认的",
+                )
                 model_in = gr.Dropdown(
                     choices=list(MODEL_CHOICES),
                     value=default_model,
                     label="模型（越大越准越慢）",
                     allow_custom_value=True,
-                    info="large-v3 精度最高；large-v3-turbo 约 4 倍速；也可填本地模型目录",
+                    info="faster-whisper：large-v3 最准、turbo 约 4 倍速；qwen3-asr：填 models/Qwen3-ASR-1.7B（留空则自动选择）",
                 )
                 with gr.Row():
                     lang_in = gr.Dropdown(
@@ -170,8 +229,12 @@ def build_demo(
                     )
                 run_btn = gr.Button("开始转写", variant="primary", size="lg")
                 gr.Markdown(
-                    "首次运行会自动下载模型（large-v3 约 3GB）。"
-                    "国内网络可在命令行用 `--hf-mirror`，或设置环境变量 `HF_ENDPOINT=https://hf-mirror.com`。"
+                    "首次运行会自动下载模型（faster-whisper large-v3 约 3GB，"
+                    "Qwen3-ASR-1.7B 约 4GB）。\n\n"
+                    "国内网络可在命令行用 `--hf-mirror`，或设置环境变量 "
+                    "`HF_ENDPOINT=https://hf-mirror.com`。\n\n"
+                    "Qwen3-ASR 需要先装独立环境：`scripts\\setup_qwen.ps1`（Windows）"
+                    "或 `scripts/setup_qwen.sh`（macOS/Linux）。"
                 )
             with gr.Column(scale=2):
                 status_out = gr.Markdown("等待上传文件…")
@@ -190,7 +253,10 @@ def build_demo(
 
         run_btn.click(
             fn=run_job,
-            inputs=[file_in, model_in, lang_in, task_in, vad_in, batch_in, device_in, compute_in, keep_in],
+            inputs=[
+                file_in, engine_in, model_in, lang_in, task_in,
+                vad_in, batch_in, device_in, compute_in, keep_in,
+            ],
             outputs=[status_out, text_out, table_out, file_out, json_view],
         )
         file_in.change(lambda: "文件已就绪，点击「开始转写」。", outputs=status_out)
@@ -206,11 +272,17 @@ def launch(
     default_model: str = DEFAULT_MODEL,
     default_device: str = "auto",
     output_dir: str = "output",
+    default_engine: str = ENGINE_FASTER_WHISPER,
 ) -> None:
     """启动网页界面（阻塞）。"""
     _ensure_gradio_temp()
     os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
-    demo = build_demo(default_model=default_model, default_device=default_device, output_dir=output_dir)
+    demo = build_demo(
+        default_model=default_model,
+        default_device=default_device,
+        output_dir=output_dir,
+        default_engine=default_engine,
+    )
     demo.queue(default_concurrency_limit=1, max_size=8).launch(
         server_name=host,
         server_port=port,

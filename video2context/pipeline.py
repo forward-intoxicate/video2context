@@ -7,12 +7,12 @@ import re
 import shutil
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import __version__
-from .config import llm_settings
+from .config import configured_engine, llm_settings
 from .ffmpeg_tools import (
     TARGET_CHANNELS,
     TARGET_SAMPLE_RATE,
@@ -28,7 +28,47 @@ from .writers import SUPPORTED_FORMATS, write_outputs
 ProgressCallback = Callable[[float, float, str], None]
 LogCallback = Callable[[str], None]
 
+#: 识别引擎名（命令行 --engine 的可选值）
+ENGINE_FASTER_WHISPER = "faster-whisper"
+ENGINE_QWEN3_ASR = "qwen3-asr"
+ENGINE_CHOICES: tuple[str, ...] = (ENGINE_FASTER_WHISPER, ENGINE_QWEN3_ASR)
+
+#: 用户可能写的别名 → 规范引擎名
+ENGINE_ALIASES: dict[str, str] = {
+    "whisper": ENGINE_FASTER_WHISPER,
+    "faster_whisper": ENGINE_FASTER_WHISPER,
+    "fw": ENGINE_FASTER_WHISPER,
+    "qwen": ENGINE_QWEN3_ASR,
+    "qwen3": ENGINE_QWEN3_ASR,
+    "qwen-asr": ENGINE_QWEN3_ASR,
+    "qwen3_asr": ENGINE_QWEN3_ASR,
+}
+
 _UNSAFE_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def normalize_engine(value: Optional[str]) -> str:
+    """把引擎名（含别名、大小写）归一化。"""
+    cleaned = (value or "").strip().lower().replace(" ", "")
+    if not cleaned:
+        return ENGINE_FASTER_WHISPER
+    return ENGINE_ALIASES.get(cleaned, cleaned)
+
+
+def is_qwen_engine(value: Optional[str]) -> bool:
+    return normalize_engine(value) == ENGINE_QWEN3_ASR
+
+
+def resolve_engine(value: Optional[str] = None) -> str:
+    """决定本次用哪个引擎：**显式参数 > `V2C_ENGINE`（含 .env）> 默认 faster-whisper**。
+
+    为什么默认不设成 Qwen：新克隆的仓库只有主环境（torch-free），
+    把 Qwen 设成出厂默认会让"装完就能用"直接失败。想在自己机器上默认用 Qwen，
+    在 ``.env`` 里写一行 ``V2C_ENGINE=qwen3-asr`` 即可。
+    """
+    if (value or "").strip():
+        return normalize_engine(value)
+    return normalize_engine(configured_engine()) or ENGINE_FASTER_WHISPER
 
 
 @dataclass
@@ -67,6 +107,14 @@ class TranscribeOptions:
     verify_glossary: bool = True
     llm_base_url: Optional[str] = None
     llm_model: Optional[str] = None
+    # ---- 识别引擎 ----
+    #: 空串 = 未指定，按 V2C_ENGINE / 默认解析（见 resolve_engine）
+    engine: str = ""
+    qwen_aligner: Optional[str] = None  # 强制对齐模型（None=自动探测，"off"=关闭）
+    qwen_python: Optional[str] = None  # .venv-qwen 解释器（None=自动探测）
+    qwen_low_mem: str = "auto"  # auto | on | off
+    qwen_max_new_tokens: int = 4096
+    qwen_max_batch_size: int = 8
 
 
 @dataclass
@@ -134,6 +182,72 @@ def _step(index: int, total: int, text: str, log: LogCallback) -> None:
     log(f"[{index}/{total}] {text}")
 
 
+def build_transcriber(opts: TranscribeOptions, log: LogCallback):
+    """按 ``opts.engine`` 造出识别器（faster-whisper 或 Qwen3-ASR）。
+
+    两个引擎的接口一致（``.transcribe(...)`` 返回 :class:`TranscriptionResult`），
+    所以流水线后面的逻辑不用区分引擎。
+
+    Qwen3-ASR 走独立环境 + 子进程，见 :mod:`video2context.qwen_engine`。
+    """
+    engine = resolve_engine(opts.engine)
+    if engine == ENGINE_QWEN3_ASR:
+        from .qwen_engine import get_qwen_engine, resolve_qwen_model
+
+        # --model 的默认值是 Whisper 的 large-v3；用 Qwen 引擎时它显然不是用户的本意，
+        # 当成"没指定"处理，交给 Qwen 的默认模型（本地 models/Qwen3-ASR-1.7B 或 HF 仓库名）。
+        requested = opts.model
+        if requested in (None, "", DEFAULT_MODEL):
+            requested = None
+            if opts.model == DEFAULT_MODEL:
+                log(f"提示：--engine {ENGINE_QWEN3_ASR} 下未指定 --model，自动选用 Qwen 默认模型")
+        return get_qwen_engine(
+            model=resolve_qwen_model(requested),
+            aligner=opts.qwen_aligner,
+            python=opts.qwen_python,
+            device=opts.device,
+            low_mem=opts.qwen_low_mem,
+            max_new_tokens=opts.qwen_max_new_tokens,
+            max_batch_size=opts.qwen_max_batch_size,
+            log_callback=log,
+        )
+
+    return get_transcriber(
+        model=opts.model_dir or opts.model,
+        device=opts.device,
+        compute_type=opts.compute_type,
+        local_files_only=opts.local_files_only,
+        cpu_threads=opts.cpu_threads,
+        hf_endpoint=opts.hf_endpoint,
+        log_callback=log,
+    )
+
+
+def glossary_prompt_for(opts: TranscribeOptions, glossary: Optional[Glossary]) -> Optional[str]:
+    """把词表 + 用户提示词拼成当前引擎需要的"提示"。
+
+    * faster-whisper：极短的 ``initial_prompt``（实测 30~80 字最稳）；
+    * Qwen3-ASR：``context`` 会作为 **system message** 注入。实测**指令式**的短词表
+      会让模型复述词表而不转写，所以这里只用"描述视频里有什么"的完整句子。
+
+    注意：进一步实测发现 Qwen 的 ``context`` 对结果**没有可观测影响**
+    （换成完全无关的内容输出逐字相同，见 docs/models.md 第 6.4 节）。
+    这里仍然照常拼装，是因为它无害、词表本身有复核价值，
+    且上游一旦让它生效本工程不用改代码。
+    """
+    parts: list[str] = []
+    if glossary is not None:
+        if is_qwen_engine(resolve_engine(opts.engine)):
+            context = glossary.to_context()
+            if context:
+                parts.append(context)
+        elif glossary.to_prompt():
+            parts.append(glossary.to_prompt())
+    if opts.initial_prompt:
+        parts.append(opts.initial_prompt.strip())
+    return " ".join(part for part in parts if part) or None
+
+
 def scan_and_build_glossary(
     source: str | Path,
     options: Optional[TranscribeOptions] = None,
@@ -163,15 +277,11 @@ def scan_and_build_glossary(
         log(f"[1/2] 采样前 {scan_seconds:.0f} 秒音频用于粗转写")
         extract_audio(src, scan_audio, start=opts.start, duration=scan_seconds)
 
-        transcriber = get_transcriber(
-            model=opts.model_dir or opts.scan_model or opts.model,
-            device=opts.device,
-            compute_type=opts.compute_type,
-            local_files_only=opts.local_files_only,
-            cpu_threads=opts.cpu_threads,
-            hf_endpoint=opts.hf_endpoint,
-            log_callback=log,
-        )
+        scan_opts = opts
+        if opts.scan_model and opts.scan_model != opts.model:
+            # 第一遍可以换个更小的模型，省时省显存
+            scan_opts = replace(opts, model=opts.scan_model)
+        transcriber = build_transcriber(scan_opts, log)
         log("[2/2] 第一遍粗转写（无提示词、不带上文条件）")
         scan = transcriber.transcribe(
             scan_audio,
@@ -261,15 +371,7 @@ def process(
         size_mb = audio_path.stat().st_size / 1_048_576
         log(f"      音频就绪：{audio_path.name}（{size_mb:.1f} MB）")
 
-        transcriber = get_transcriber(
-            model=opts.model_dir or opts.model,
-            device=opts.device,
-            compute_type=opts.compute_type,
-            local_files_only=opts.local_files_only,
-            cpu_threads=opts.cpu_threads,
-            hf_endpoint=opts.hf_endpoint,
-            log_callback=log,
-        )
+        transcriber = build_transcriber(opts, log)
 
         # 3) 领域词表（可选，两遍解码的第一遍）------------------------------
         glossary = opts.glossary
@@ -306,15 +408,21 @@ def process(
             finally:
                 shutil.rmtree(scan_temp, ignore_errors=True)
 
-        prompt_parts = []
-        if glossary is not None and glossary.to_prompt():
-            prompt_parts.append(glossary.to_prompt())
-        if opts.initial_prompt:
-            prompt_parts.append(opts.initial_prompt.strip())
-        effective_prompt = " ".join(prompt_parts) or None
+        effective_prompt = glossary_prompt_for(opts, glossary)
+        engine = resolve_engine(opts.engine)
+        if effective_prompt:
+            log(f"      识别提示（{len(effective_prompt)} 字）：{effective_prompt}")
+            if is_qwen_engine(engine):
+                # 实测结论，别让用户以为它有用（见 docs/models.md「context 实测」）
+                log(
+                    "      注意：Qwen3-ASR 的 context 在本工程实测中对结果**没有可观测影响**"
+                    "（换成完全无关的内容，输出逐字相同）。词表仍会写进结果 JSON 备查，"
+                    "但不要指望它修同音词。"
+                )
 
         # 4) 正式识别 ------------------------------------------------------
-        log(f"[{total_steps}/{total_steps}] 语音识别（模型 {opts.model}，任务 {opts.task}）")
+        active_model = getattr(transcriber, "model", opts.model)
+        log(f"[{total_steps}/{total_steps}] 语音识别（引擎 {engine}，模型 {active_model}，任务 {opts.task}）")
         result = transcriber.transcribe(
             audio_path,
             language=opts.language,
@@ -330,11 +438,14 @@ def process(
             log_callback=log,
         )
 
-        # 4.1) 验证词表偏置是否真的生效，失效就回退（实测会静默失效）---------
+        # 4.1) 验证词表偏置是否真的生效，失效就回退（实测 faster-whisper 会静默失效）---
         if glossary is not None and opts.verify_glossary and glossary.symbols:
             score = symbol_hit_score(result.text, glossary)
             fallback_used = False
-            if score.bias_failed:
+            # Qwen3-ASR 的 context 是 system message，不是"窗口级提示"，不存在
+            # faster-whisper 那种"同一提示措辞一变就静默失效"的行为；而且重跑一次
+            # 要重新加载模型（约 10s），代价不小，所以只报数不回退。
+            if score.bias_failed and not is_qwen_engine(engine):
                 log(
                     "      ⚠ 词表偏置似乎失效（期望符号命中 0 次，"
                     f"已知错误写法出现 {score.wrong_hits} 次）→ 回退到无词表结果"
@@ -356,6 +467,13 @@ def process(
                 if fallback.text.strip():
                     result = fallback
                     fallback_used = True
+            elif score.bias_failed:
+                log(
+                    f"      ⚠ 结果里仍有 {score.wrong_hits} 处已知错误写法"
+                    f"（{'、'.join(score.unresolved)}），且正确符号一个未命中 —— "
+                    "Qwen 引擎不会自动回退，可换 --engine faster-whisper 对照，"
+                    "或调整 --initial-prompt 的写法"
+                )
             verification = {**score.to_dict(), "fallback_used": fallback_used}
             if fallback_used:
                 log("      词表校验：错误写法仍在、正确符号一个未命中 → 已回退到无词表版本")

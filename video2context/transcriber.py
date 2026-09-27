@@ -117,6 +117,10 @@ class TranscriptionResult:
     temperature: Optional[float | list[float]] = None
     elapsed_seconds: float = 0.0
     model_load_seconds: float = 0.0
+    #: 产生这份结果的引擎（faster-whisper / qwen3-asr），写进 JSON 便于溯源
+    engine: str = "faster-whisper"
+    #: 引擎私有信息（Qwen 的对齐模型、时间戳来源等），会平铺进 to_dict()
+    extra: dict[str, Any] = field(default_factory=dict)
 
     @property
     def realtime_factor(self) -> float:
@@ -126,8 +130,8 @@ class TranscriptionResult:
         return self.elapsed_seconds / self.duration
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "engine": "faster-whisper",
+        data: dict[str, Any] = {
+            "engine": self.engine,
             "model": self.model,
             "device": self.device,
             "compute_type": self.compute_type,
@@ -147,6 +151,8 @@ class TranscriptionResult:
             "model_load_seconds": round(self.model_load_seconds, 3),
             "realtime_factor": round(self.realtime_factor, 4),
         }
+        data.update(self.extra)
+        return data
 
 
 def cuda_device_count() -> int:
