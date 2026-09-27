@@ -19,6 +19,11 @@
 下面的命令假设已经装好环境、并且在工程根目录。Windows 用 `.\.venv\Scripts\python`，
 macOS / Linux 用 `./.venv/bin/python`（下同）。
 
+> ⚠️ **注意别用错 Python**。依赖（含自带 ffmpeg 的 `imageio-ffmpeg`）都装在工程的 `.venv` 里。
+> 如果你的提示符是 `(base)`（conda）或直接敲 `python`，会报「未找到 ffmpeg」。
+> 用下面的写法，或者先跑一次 `.\.venv\Scripts\Activate.ps1` 再敲 `python`。
+> 详见 [docs/troubleshooting.md 1.5](../docs/troubleshooting.md#15-敲-python-报未找到-ffmpeg缺少-faster-whisper-多半是跑错了-python)。
+
 ```powershell
 # ① 最简：一条命令出文字（默认引擎，自动选 Qwen 或 Whisper）
 python -m video2context samples\demo_zh_math.mp4

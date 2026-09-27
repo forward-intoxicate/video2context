@@ -34,6 +34,21 @@ _INSTALL_HINT = (
 )
 
 
+def _missing_ffmpeg_message() -> str:
+    """拼出"找不到 ffmpeg"的完整提示。
+
+    最常见的真实原因其实是**跑错了 Python**（敲 `python` 跑到了 conda base / 系统
+    Python，而依赖装在工程 `.venv` 里）。所以把环境诊断放在最前面 ——
+    否则用户会照着"pip install imageio-ffmpeg"去装，把 base 环境也搞乱。
+    """
+    from .config import interpreter_hint
+
+    hint = interpreter_hint()
+    if hint:
+        return "未找到 ffmpeg。" + hint + "\n确实想在当前环境里用的话：\n" + _INSTALL_HINT.split("\n", 1)[1]
+    return _INSTALL_HINT
+
+
 class FFmpegError(RuntimeError):
     """ffmpeg 调用失败或媒体信息无法解析。"""
 
@@ -89,7 +104,7 @@ def find_ffmpeg(refresh: bool = False) -> str:
             _ffmpeg_path = str(Path(candidate).resolve())
             return _ffmpeg_path
 
-    raise FFmpegNotFoundError(_INSTALL_HINT)
+    raise FFmpegNotFoundError(_missing_ffmpeg_message())
 
 
 def _run(args: Sequence[str], timeout: Optional[float] = None) -> subprocess.CompletedProcess:
@@ -104,7 +119,7 @@ def _run(args: Sequence[str], timeout: Optional[float] = None) -> subprocess.Com
             stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError as exc:
-        raise FFmpegNotFoundError(_INSTALL_HINT) from exc
+        raise FFmpegNotFoundError(_missing_ffmpeg_message()) from exc
     except subprocess.TimeoutExpired as exc:
         raise FFmpegError(f"ffmpeg 执行超时（>{timeout}s）：{' '.join(map(str, args))}") from exc
 

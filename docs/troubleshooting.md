@@ -75,6 +75,44 @@ Gradio 6.x 要求 **Python ≥ 3.10**。
   用 3.11～3.13 的官方 CPython（不是某些精简版发行版）；
 - Windows 上如果装了 `nvidia-cudnn-cu12` 却仍报 DLL 缺失，见 [2.2](#22-报错-cudnn64_9dll--cublas64_12dll-找不到)。
 
+### 1.5 敲 `python` 报「未找到 ffmpeg」/「缺少 faster-whisper」—— 多半是跑错了 Python
+
+这是**最常见的一个坑**，而且报错信息本身会误导你：依赖（含自带 ffmpeg 的
+`imageio-ffmpeg`）都装在工程的 `.venv` 里，但很多人习惯直接敲 `python`，
+于是跑到了 conda base 或系统 Python 上，然后看到「未找到 ffmpeg」，
+以为要去装 ffmpeg —— 其实装错地方了。
+
+**怎么认出来**：看提示符。`(base) PS ...>` 是 conda base；激活了 venv 会显示 `(.venv)`。
+新版报错会直接把这件事指出来：
+
+```
+[失败] samples\demo_zh_math.mp4：未找到 ffmpeg。
+⚠ 你现在用的不是工程的虚拟环境：
+    当前 Python ：D:\Anaconda\python.exe
+    工程环境    ：E:\...\video2context\.venv\Scripts\python.exe
+  依赖（含自带 ffmpeg 的 imageio-ffmpeg）都装在工程环境里。
+  改用工程环境跑（Windows）：
+    E:\...\.venv\Scripts\python.exe -m video2context <参数>
+  或先激活它，之后 python 就指向工程环境：
+    .\.venv\Scripts\Activate.ps1
+```
+
+**两条路，选一个**：
+
+```powershell
+# ① 直接用 venv 的 python（不用激活，推荐写进脚本/快捷方式）
+.\.venv\Scripts\python -m video2context samples\demo_zh_math.mp4
+
+# ② 先激活，之后 python 就指向工程环境
+.\.venv\Scripts\Activate.ps1
+python -m video2context samples\demo_zh_math.mp4
+```
+
+macOS / Linux 对应 `./.venv/bin/python` 和 `source .venv/bin/activate`。
+
+> **不要在 base 里 `pip install imageio-ffmpeg` 了事** —— 那只是把问题从"找不到 ffmpeg"
+> 变成"两个环境依赖状态不一致"，后面还会在别的地方栽跟头。
+
 ---
 
 ## 2. ffmpeg 与显卡

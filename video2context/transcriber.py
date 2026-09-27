@@ -303,8 +303,11 @@ class Transcriber:
         try:
             from faster_whisper import WhisperModel  # 延迟导入
         except ImportError as exc:  # pragma: no cover
+            from .config import interpreter_hint
+
             raise RuntimeError(
                 "缺少 faster-whisper 依赖，请先执行：pip install -r requirements.txt"
+                + interpreter_hint()
             ) from exc
 
         errors: list[str] = []

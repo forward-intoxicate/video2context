@@ -134,6 +134,55 @@ def configured_engine(load_env: bool = True) -> str:
     return os.environ.get(ENGINE_ENV_VAR, "").strip()
 
 
+# --------------------------------------------------------- 解释器环境诊断
+
+
+def project_python() -> Optional[Path]:
+    """工程内虚拟环境（``.venv``）的解释器路径；没建过则返回 None。"""
+    for relative in ("Scripts/python.exe", "bin/python", "bin/python3"):
+        candidate = PROJECT_ROOT / ".venv" / relative
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def interpreter_hint(
+    *,
+    venv_python: Optional[Path] = None,
+    current: Optional[Path] = None,
+) -> str:
+    """当前解释器**不是**工程的虚拟环境时，给出一段可照做的提示；否则返回空串。
+
+    这是最容易踩的坑：工程依赖（自带 ffmpeg 的 imageio-ffmpeg、faster-whisper 等）
+    都装在 ``.venv`` 里，但很多人习惯直接敲 ``python``，于是跑到了 conda base 或系统
+    Python 上，然后看到「未找到 ffmpeg」这种和真实原因毫不相干的报错。
+
+    ``venv_python`` / ``current`` 只是给测试注入用的。
+    """
+    import sys
+
+    venv = venv_python if venv_python is not None else project_python()
+    if venv is None:  # 没建过虚拟环境：谈不上"用错了"
+        return ""
+    running = current if current is not None else Path(sys.executable)
+    try:
+        if Path(running).resolve() == Path(venv).resolve():
+            return ""
+    except OSError:  # pragma: no cover - 路径异常时按"用错了"处理
+        pass
+
+    return (
+        "\n⚠ 你现在用的不是工程的虚拟环境：\n"
+        f"    当前 Python ：{running}\n"
+        f"    工程环境    ：{venv}\n"
+        "  依赖（含自带 ffmpeg 的 imageio-ffmpeg）都装在工程环境里。\n"
+        "  改用工程环境跑（Windows）：\n"
+        f"    {venv} -m video2context <参数>\n"
+        "  或先激活它，之后 python 就指向工程环境：\n"
+        "    .\\.venv\\Scripts\\Activate.ps1\n"
+    )
+
+
 @dataclass
 class LLMSettings:
     """调用大模型所需的配置。``api_key`` 为空表示未配置。"""

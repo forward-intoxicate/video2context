@@ -10,10 +10,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from video2context.cli import _normalize_language, _parse_temperature  # noqa: E402
+from video2context.config import interpreter_hint, project_python  # noqa: E402
 from video2context.ffmpeg_tools import (  # noqa: E402
     extract_audio,
     find_ffmpeg,
@@ -202,6 +204,60 @@ class TestFFmpegPipeline(unittest.TestCase):
     def test_probe_missing_file(self) -> None:
         with self.assertRaises(FileNotFoundError):
             probe_media(self.tmp / "nope.mp4")
+
+
+class InterpreterHintTest(unittest.TestCase):
+    """跑错 Python 是新手最容易踩的坑，提示必须准确且只在真的跑错时出现。"""
+
+    def test_quiet_when_running_in_the_project_venv(self) -> None:
+        venv = project_python()
+        if venv is None:
+            self.skipTest("本机没有 .venv（CI 就是这样），由注入用例覆盖")
+        self.assertEqual(interpreter_hint(venv_python=venv, current=venv), "")
+
+    def test_hint_names_both_interpreters(self) -> None:
+        venv = Path("/proj/.venv/bin/python")
+        other = Path("/usr/bin/python3")
+        text = interpreter_hint(venv_python=venv, current=other)
+        self.assertIn(str(venv), text)
+        self.assertIn(str(other), text)
+        # 要给出可照做的两条路：直接用 venv 的 python / 先激活
+        self.assertIn("-m video2context", text)
+        self.assertIn("Activate.ps1", text)
+
+    def test_no_hint_when_project_has_no_venv(self) -> None:
+        # 没建过虚拟环境就谈不上"用错了"，不该误导用户。
+        # 注意 venv_python=None 的含义是"自动探测"，要模拟"没有 .venv"得 patch 探测函数。
+        with mock.patch("video2context.config.project_python", return_value=None):
+            self.assertEqual(interpreter_hint(current=Path("/usr/bin/python3")), "")
+
+    def test_project_python_is_an_existing_file(self) -> None:
+        found = project_python()
+        if found is not None:
+            self.assertTrue(found.is_file())
+
+
+class MissingFfmpegMessageTest(unittest.TestCase):
+    """「未找到 ffmpeg」的提示要先说环境问题（如果是环境问题），再给安装方式。"""
+
+    def test_plain_message_when_environment_is_fine(self) -> None:
+        from video2context import config, ffmpeg_tools
+
+        with mock.patch.object(config, "interpreter_hint", return_value=""):
+            text = ffmpeg_tools._missing_ffmpeg_message()
+        self.assertTrue(text.startswith("未找到 ffmpeg。任选一种方式解决："))
+        self.assertNotIn("你现在用的不是工程的虚拟环境", text)
+
+    def test_environment_hint_comes_before_install_options(self) -> None:
+        from video2context import config, ffmpeg_tools
+
+        with mock.patch.object(config, "interpreter_hint", return_value="\n⚠ 你现在用的不是工程的虚拟环境：\n"):
+            text = ffmpeg_tools._missing_ffmpeg_message()
+        self.assertLess(
+            text.index("你现在用的不是工程的虚拟环境"),
+            text.index("pip install imageio-ffmpeg"),
+            "环境诊断要排在安装建议前面 —— 否则用户会照着去装，把 base 环境也搞乱",
+        )
 
 
 if __name__ == "__main__":

@@ -4,6 +4,21 @@
 
 ## [未发布]
 
+### 修复：「未找到 ffmpeg」的提示没说真正的原因
+
+用户按示例命令跑，报「未找到 ffmpeg」——真实原因是他用的是 conda base，
+而依赖装在工程的 `.venv` 里。原来的提示只列了"装 ffmpeg 的三种方式"，
+照着做只会把 base 环境也搞乱。
+
+- 新增 `config.interpreter_hint()`：当前解释器不是工程 `.venv` 时，
+  给出一段可照做的提示（打印两个 Python 路径 + 两条改法）。
+  没建过 `.venv` 时返回空串，不误导
+- `ffmpeg_tools` 的报错改为：**环境诊断排在安装建议前面**；
+  确实在正确环境里仍找不到 ffmpeg 时，才只给安装方式
+- `transcriber` 的「缺少 faster-whisper」也用同一套诊断
+- 文档：`docs/troubleshooting.md` 新增 1.5 节（怎么从提示符认出用错了 Python、
+  两条改法、为什么不要"在 base 里补装"）；samples/README.md 的命令集合顶部加了警示
+
 ### 新增：仓库自带可直接跑的示例视频与示例命令
 
 - **新增 3 个离线合成的示例视频**（`samples/`），覆盖不同场景，几十秒就能出结果：
