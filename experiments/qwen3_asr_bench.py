@@ -120,11 +120,32 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="低内存加载：分片直接进显存，避开 transformers 把整个分片读进 CPU 内存",
     )
+    parser.add_argument(
+        "--context",
+        default=None,
+        help="上下文（会作为 system message 注入，用于偏置术语与符号）",
+    )
+    parser.add_argument(
+        "--glossary",
+        default=None,
+        help="词表文件（主工程格式：`错形 -> 正确` 或纯符号/术语），自动转成 --context",
+    )
     args = parser.parse_args(argv)
 
     source = Path(args.input)
     if not source.exists():
         raise SystemExit(f"输入不存在：{source}")
+
+    # 上下文（system message）：可以用 --context 直接给，也可以用 --glossary 复用主工程词表
+    context = args.context or ""
+    if args.glossary:
+        sys.path.insert(0, str(PROJECT_ROOT))
+        from video2context.glossary import Glossary
+
+        glossary = Glossary.from_file(args.glossary)
+        items = [s.right for s in glossary.symbols if s.right] + list(glossary.terms)
+        context = "请准确识别以下术语与符号：" + "、".join(dict.fromkeys(items)) + "。"
+        print(f"[i] 词表 → context（{len(items)} 项）: {context}")
 
     import torch
     from qwen_asr import Qwen3ASRModel
@@ -184,9 +205,12 @@ def main(argv: list[str] | None = None) -> int:
         size_mb = wav.stat().st_size / 1e6
         print(f"[2/3] 音频就绪：16kHz 单声道 wav（{size_mb:.1f} MB）")
 
-        print(f"[3/3] 识别中（language={args.language or '自动检测'}）…")
+        print(f"[3/3] 识别中（language={args.language or '自动检测'}"
+              + ("，带 context" if context else "") + "）…")
         t0 = time.perf_counter()
         call_kwargs: dict = {"audio": str(wav), "language": args.language}
+        if context:
+            call_kwargs["context"] = context
         if args.aligner:
             call_kwargs["return_time_stamps"] = True
         results = model.transcribe(**call_kwargs)
