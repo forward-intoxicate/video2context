@@ -1,7 +1,8 @@
 # video2context · 视频转文字
 
 > 把视频丢进去，本地抽出音轨、识别成文字，输出**带时间戳的 JSON / SRT / VTT / TXT**。
-> 全部在本机运行，不需要 API Key，**有显卡能用，没有显卡也能用**。
+> 默认全程在本机运行、不需要任何 API Key；**有显卡能用，没有显卡也能用**。
+> 可选接入大模型做「领域词表」，修掉同音词与专有名词错误（不上传音频，只发一小段转写文本）。
 
 ![CI](https://github.com/forward-intoxicate/video2context/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
@@ -9,6 +10,8 @@
 
 ```
 视频.mp4 ──ffmpeg──▶ 16kHz 单声道 wav ──Silero VAD 切分──▶ faster-whisper ──▶ JSON / SRT / VTT / TXT
+                                                              ▲
+                                              领域词表（手写 或 大模型自动推断）修同音词
 ```
 
 |  | 说明 |
@@ -17,7 +20,7 @@
 | **语言** | 中文、英文自动识别；也可强制指定（更快、更准） |
 | **输出** | JSON（分段+时间戳+语种+参数）、SRT、VTT、TXT |
 | **硬件** | NVIDIA 显卡（推荐）或纯 CPU，程序自动选择 |
-| **联网** | 仅首次下载模型需要；之后可完全离线 |
+| **联网** | 仅首次下载模型需要；之后可完全离线（自动词表除外） |
 
 ---
 
@@ -27,6 +30,7 @@
 - [快速开始](#快速开始)
 - [安装详解（有显卡 / 没有显卡）](#安装详解有显卡--没有显卡)
 - [怎么用](#怎么用)
+- [领域词表（修同音词/专有名词）](#领域词表修同音词专有名词)
 - [输出文件说明](#输出文件说明)
 - [模型怎么选](#模型怎么选)
 - [实测性能](#实测性能)
@@ -246,6 +250,14 @@ python -m video2context doctor
 | `--condition-on-previous-text` | 以上文为条件（更连贯，长音频易重复） | 关 |
 | `--word-timestamps` | 词级时间戳（JSON 里多 `words` 字段） | 关 |
 | `--start` / `--duration` | 只处理某一段（秒） | 全程 |
+| `--glossary` | 手写词表文件（`错形 -> 正确` 或纯术语） | 无 |
+| `--auto-glossary` | 自动两遍解码：粗转写 → 大模型推断词表 → 正式转写 | 关 |
+| `--dry-run-glossary` | 只生成词表并打印，不做正式转写 | 关 |
+| `--scan-duration` | 第一遍采样秒数 | `90` |
+| `--scan-model` | 第一遍用的模型（默认与正式相同） | 同正式 |
+| `--glossary-out` | 把词表写到文件（便于复用与复核） | 无 |
+| `--no-verify-glossary` | 不校验偏置是否生效（默认校验，失效则回退） | 关 |
+| `--llm-base-url` / `--llm-model` | 大模型服务地址 / 模型名 | 读环境变量 |
 | `--model-dir` | 本地模型目录（配合下载器，完全离线） | 无 |
 | `--local-files-only` | 只用本地缓存，不联网 | 关 |
 | `--hf-endpoint` / `--hf-mirror` | 模型下载源 / 用 hf-mirror | 官方源 |
@@ -262,6 +274,60 @@ python -m video2context webui --share                  # 生成公网临时链�
 
 页面左侧上传视频、选模型/语种/设备，右侧实时进度 + 全文 + 分段表格 + JSON 下载。
 默认只监听 `127.0.0.1`（仅本机可访问）；局域网访问加 `--host 0.0.0.0`。
+
+---
+
+## 领域词表（修同音词/专有名词）
+
+中文识别最难的错误是**同音词**：`u(x)` 被听成「右F4」、`导数` 被听成「倒数」、`再求导` 被听成「在求导」。
+喂一段词表就能修掉，实测在 `samples/formula.mp4` 上**「右/位」错误从 13 处降到 0 处**。
+
+### 方式一：手写词表（完全离线、零额外开销）
+
+```powershell
+# terms.txt 内容：
+#   右F4 -> u(x)       「错形 -> 正确」表示还原
+#   位F4 -> v(x)
+#   可导
+python -m video2context 视频.mp4 --glossary terms.txt
+```
+
+### 方式二：自动两遍解码
+
+先配好大模型密钥（**只把一小段转写文本发给大模型，音频不出本机**）：
+
+```powershell
+copy .env.example .env          # macOS/Linux: cp .env.example .env
+# 编辑 .env，填入 V2C_LLM_API_KEY=sk-xxx
+python -m video2context doctor  # 应显示「大模型（词表推断）: 已配置（.env，sk-***abcd）」
+```
+
+```powershell
+# 推荐：先生成词表看一眼，确认后再正式跑（第二步完全离线、不再调用大模型）
+python -m video2context 视频.mp4 --dry-run-glossary --glossary-out terms.json
+python -m video2context 视频.mp4 --glossary terms.json
+
+# 或者一条命令跑完
+python -m video2context 视频.mp4 --auto-glossary
+```
+
+额外开销：采样 90 秒做第一遍（约 3~5 秒 GPU）+ 一次大模型调用（约 0.0003 元）。
+
+### ⚠️ 为什么内置「验证 + 回退」
+
+Whisper 的提示词偏置会**静默失效**：实测同样包含正确符号 `u(x)、v(x)、x0` 的 prompt，
+**措辞一变就可能完全无效**（且确定性复现，跑 3 次结果一字不差）。
+我试过用"填充词""长度""截断""裸字母"四个假设解释，**全部被实验否定**。
+
+所以程序会在带词表转写后统计「期望符号命中次数」，命中 0 就自动回退到无词表版本，
+并把两版的评分写进 JSON。完整实验数据（含 9 个 prompt 变体的对照表）见 **[docs/glossary.md](docs/glossary.md)**。
+
+### 密钥安全
+
+* 密钥只从 `V2C_LLM_API_KEY` 环境变量或工程根目录的 `.env` 读取（`.env` 已在 `.gitignore` 中）
+* **没有命令行参数可以传密钥** —— 命令行参数会进进程列表与命令历史
+* 日志、报错、JSON 里的密钥一律打码成 `sk-***abcd`
+* 提交前可跑 `python scripts/check_secrets.py`（CI 里也会自动跑）
 
 ---
 
@@ -423,6 +489,11 @@ Windows 执行 `pip install -r requirements-gpu-win.txt`，本工程会自动把
 保持 VAD 开启（默认）、明确 `--language`、必要时加 `--initial-prompt`。
 极端情况可把 `--beam-size` 提到 8～10。
 
+**Q：专有名词、人名地名总是错（同音词）？**
+用**领域词表**：手写 `--glossary terms.txt`，或自动 `--auto-glossary`（先 `--dry-run-glossary` 确认词表）。
+实测能把「右F4 → u(x)」这类错误从 13 处降到 0 处。详见 [领域词表](#领域词表修同音词专有名词) 与 [docs/glossary.md](docs/glossary.md)。
+⚠️ 注意提示词偏置会**静默失效**，所以程序内置了验证与自动回退。
+
 **Q：中文标点不理想？**
 Whisper 自带标点是模型行为，不是后处理。若对中文标点要求高，可换成 FunASR/SenseVoice，见 [docs/models.md](docs/models.md)。
 
@@ -448,6 +519,9 @@ video2context/
 │  ├─ cli.py                 # 命令行：transcribe / webui / doctor
 │  ├─ pipeline.py            # 主流程：探测 → 抽音频 → 识别 → 写结果
 │  ├─ transcriber.py         # faster-whisper 封装：设备选择、显存预检、降级、缓存
+│  ├─ glossary.py            # 领域词表：符号还原、提示词拼装、偏置评分
+│  ├─ llm.py                 # 极小的大模型客户端（OpenAI 兼容，零新依赖）
+│  ├─ config.py              # .env / 环境变量读取、密钥脱敏
 │  ├─ ffmpeg_tools.py        # ffmpeg 定位、媒体探测、音轨提取
 │  ├─ writers.py             # JSON / TXT / SRT / VTT 输出
 │  └─ webui.py               # Gradio 网页界面
@@ -456,8 +530,11 @@ video2context/
 ├─ scripts/
 │  ├─ setup.ps1 / setup.sh   # 一键建环境（Windows / macOS+Linux）
 │  ├─ run_web.ps1 / run_web.sh
-│  └─ download_model.py      # 模型分块断点续传下载器（HF / 魔搭双源）
+│  ├─ download_model.py      # 模型分块断点续传下载器（HF / 魔搭双源）
+│  ├─ check_docs.py          # 文档链接与锚点校验
+│  └─ check_secrets.py       # 提交前防泄露扫描
 ├─ tests/                    # 离线单元测试（不需要模型和显卡）
+├─ .env.example              # 大模型密钥配置模板（.env 本身已 gitignore）
 ├─ .github/workflows/ci.yml  # 持续集成
 ├─ requirements.txt          # 核心依赖（CPU 也能跑）
 ├─ requirements-web.txt      # + 网页界面
@@ -475,11 +552,13 @@ video2context/
 
 ```bash
 pip install -r requirements-dev.txt
-python -m unittest discover -s tests -v    # 28 项测试，离线、不需要模型和显卡
+python -m unittest discover -s tests -v    # 54 项测试，离线、不需要模型和显卡、不需要密钥
 ruff check video2context tests scripts      # 代码检查
+python scripts/check_docs.py                # 文档链接与锚点
+python scripts/check_secrets.py --all       # 防泄露扫描
 ```
 
-测试用 ffmpeg 现场合成素材，并用替身对象替换识别器，因此**在 CI 里无需下载模型**。
+测试用 ffmpeg 现场合成素材，并用替身对象替换识别器与大模型，因此**在 CI 里无需下载模型、无需 API Key**。
 详见 [CONTRIBUTING.md](CONTRIBUTING.md) 与 [docs/development.md](docs/development.md)。
 
 ---
@@ -488,6 +567,7 @@ ruff check video2context tests scripts      # 代码检查
 
 | 文档 | 内容 |
 |---|---|
+| [docs/glossary.md](docs/glossary.md) | 领域词表：三种用法、两遍解码实现、**9 个 prompt 变体的实验数据**、验证回退机制、密钥安全 |
 | [docs/architecture.md](docs/architecture.md) | 每个模块怎么实现、ffmpeg 具体命令、VAD/解码参数、显存与批量、错误处理与降级链路 |
 | [docs/models.md](docs/models.md) | Whisper 家族与 CTranslate2 量化详解、VAD 模型、选型表、如何换 FunASR/SenseVoice |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | 按症状排查：安装、ffmpeg、模型下载、显卡、识别质量、性能 |

@@ -15,15 +15,22 @@ pip install -r requirements-dev.txt   # 含 pytest / ruff
 ## 提交前自检
 
 ```bash
-python -m unittest discover -s tests -v   # 单元测试（离线，不需要模型/显卡）
+python -m unittest discover -s tests -v   # 单元测试（离线，不需要模型/显卡/密钥）
 ruff check video2context tests scripts    # 代码风格
 ruff format --check video2context tests   # 格式（可选）
 python scripts/check_docs.py              # 校验文档里的相对链接与锚点是否有效
+python scripts/check_secrets.py --all     # 扫描有没有把密钥写进文件（务必跑）
 ```
 
-测试设计原则：**不联网、不下载模型、不依赖显卡**。需要媒体素材时用
+测试设计原则：**不联网、不下载模型、不依赖显卡、不需要密钥**。需要媒体素材时用
 `tests/media_factory.py` 里的 ffmpeg 现场合成，需要识别结果时用替身对象
 （见 `tests/test_pipeline.py` 的 `StubTranscriber`）。
+
+> 涉及大模型的功能请务必**桩接**测试，例如
+> `mock.patch("video2context.pipeline.build_glossary_from_scan", return_value=...)`，
+> 这样 CI 在没有 API Key 的机器上也能全绿。
+>
+> **绝对不要**把真实密钥写进代码、测试或文档 —— `scripts/check_secrets.py` 会拦下来。
 
 ## 代码约定
 

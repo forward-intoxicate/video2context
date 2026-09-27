@@ -14,6 +14,7 @@ DOCS = [
     ROOT / "CONTRIBUTING.md",
     ROOT / "THIRD_PARTY_NOTICES.md",
     ROOT / "docs" / "architecture.md",
+    ROOT / "docs" / "glossary.md",
     ROOT / "docs" / "models.md",
     ROOT / "docs" / "troubleshooting.md",
     ROOT / "docs" / "development.md",

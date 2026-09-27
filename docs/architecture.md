@@ -41,6 +41,7 @@
 | 流程编排 | `pipeline.py` | `process()` |
 | ④ 输出 | `writers.py` | `write_outputs()`、`segments_to_srt()`、`segments_to_vtt()` |
 | 交互 | `cli.py` / `webui.py` | `main()` / `build_demo()` |
+| 领域词表（可选） | `glossary.py` / `llm.py` / `config.py` | `build_glossary_from_scan()`、`symbol_hit_score()` —— 详见 [glossary.md](glossary.md) |
 
 ## 2. ① 媒体探测
 

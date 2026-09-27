@@ -18,31 +18,52 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))  # 便于 import media_
 from media_factory import build_video  # noqa: E402
 
 from video2context.ffmpeg_tools import find_ffmpeg  # noqa: E402
+from video2context.glossary import Glossary, SymbolRepair  # noqa: E402
 from video2context.pipeline import TranscribeOptions, process  # noqa: E402
 from video2context.transcriber import Segment, TranscriptionResult  # noqa: E402
 
+DEFAULT_TEXT = "你好，世界。Hello world."
+
 
 class StubTranscriber:
-    """伪装成 Transcriber：接口一致，但不加载任何模型。"""
+    """伪装成 Transcriber：接口一致，但不加载任何模型。
+
+    ``texts`` 可以指定第 1、2、3… 次调用分别返回什么文本，用于测试回退逻辑。
+    """
 
     def __init__(self, **kwargs):
         self.init_kwargs = kwargs
         self.audio_path: Path | None = None
         self.transcribe_kwargs: dict = {}
+        self.calls: list[dict] = []
+        self.texts: list[str] = []
+
+    def _text_for_call(self, index: int) -> str:
+        return self.texts[min(index, len(self.texts) - 1)]
 
     def transcribe(self, audio_path, **kwargs) -> TranscriptionResult:
         self.audio_path = Path(audio_path)
         self.transcribe_kwargs = kwargs
-        callback = kwargs.get("progress_callback")
-        if callback:
-            callback(1.0, 2.0, "你好，世界。")
-            callback(2.0, 2.0, "Hello world.")
-        return TranscriptionResult(
-            segments=[
+        self.calls.append(dict(kwargs))
+
+        if self.texts:  # 自定义文本：每次调用返回一整段
+            text = self._text_for_call(len(self.calls) - 1)
+            segments = [Segment(id=0, start=0.0, end=2.0, text=text, avg_logprob=-0.1, no_speech_prob=0.01)]
+        else:  # 默认：两段中英混合
+            text = DEFAULT_TEXT
+            segments = [
                 Segment(id=0, start=0.0, end=1.0, text="你好，世界。", avg_logprob=-0.1, no_speech_prob=0.01),
                 Segment(id=1, start=1.0, end=2.0, text="Hello world.", avg_logprob=-0.2, no_speech_prob=0.02),
-            ],
-            text="你好，世界。Hello world.",
+            ]
+
+        callback = kwargs.get("progress_callback")
+        if callback:
+            callback(1.0, 2.0, segments[0].text)
+            callback(2.0, 2.0, segments[-1].text)
+
+        return TranscriptionResult(
+            segments=segments,
+            text=text,
             language="zh",
             language_probability=0.99,
             duration=2.0,
@@ -96,8 +117,9 @@ class PipelineTestCase(unittest.TestCase):
         result = process(self.video, TranscribeOptions(formats=("json",), output_dir=self.out))
 
         payload = json.loads(result.json_path.read_text(encoding="utf-8"))
-        self.assertEqual(payload["schema_version"], "1.0")
+        self.assertEqual(payload["schema_version"], "1.1")
         self.assertEqual(payload["generator"]["name"], "video2context")
+        self.assertNotIn("glossary", payload)  # 没用词表时不应出现该字段
 
         source = payload["source"]
         self.assertEqual(source["filename"], "clip.mp4")
@@ -213,6 +235,73 @@ class PipelineTestCase(unittest.TestCase):
     def test_directory_as_input_raises(self) -> None:
         with self.assertRaises(ValueError):
             process(self.tmp, TranscribeOptions(output_dir=self.out))
+
+    # ------------------------------------------------------------------ 领域词表
+
+    def test_glossary_is_applied_to_prompt(self) -> None:
+        glossary = Glossary(
+            domain="数学分析，导数运算",
+            symbols=[SymbolRepair("右F4", "u(x)"), SymbolRepair("位F4", "v(x)")],
+        )
+        self.stub.texts = ["u(x) 和 v(x) 都可导"]
+        result = process(self.video, TranscribeOptions(glossary=glossary, output_dir=self.out))
+
+        payload = json.loads(result.json_path.read_text(encoding="utf-8"))
+        self.assertIn("glossary", payload)
+        self.assertEqual(payload["glossary"]["symbols"][0], {"from": "右F4", "to": "u(x)"})
+        self.assertIn("u(x)", self.stub.transcribe_kwargs["initial_prompt"])
+        self.assertNotIn("右F4", self.stub.transcribe_kwargs["initial_prompt"])
+        # 成功的偏置不应触发回退
+        self.assertFalse(payload["glossary"]["verification"]["fallback_used"])
+        self.assertEqual(payload["glossary"]["verification"]["expected_hits"], 2)
+        self.assertEqual(len(self.stub.calls), 1)
+
+    def test_glossary_bias_failure_falls_back(self) -> None:
+        glossary = Glossary(symbols=[SymbolRepair("右F4", "u(x)")])
+        self.stub.texts = ["右F4 如果在 F0 处可倒", "回退之后的普通文本"]
+        result = process(self.video, TranscribeOptions(glossary=glossary, output_dir=self.out))
+
+        payload = json.loads(result.json_path.read_text(encoding="utf-8"))
+        verification = payload["glossary"]["verification"]
+        self.assertTrue(verification["fallback_used"])
+        self.assertEqual(verification["expected_hits"], 0)
+        self.assertGreater(verification["wrong_hits"], 0)
+        self.assertEqual(payload["text"], "回退之后的普通文本")
+        self.assertEqual(len(self.stub.calls), 2)  # 一次带词表 + 一次回退
+
+    def test_auto_glossary_runs_two_passes(self) -> None:
+        built = Glossary(
+            domain="数学分析",
+            symbols=[SymbolRepair("右F4", "u(x)")],
+            scan={"duration": 1.0, "model": "stub", "chars": 4},
+        )
+        self.stub.texts = ["粗转写文本", "u(x) 加 v(x)"]
+        with mock.patch("video2context.pipeline.build_glossary_from_scan", return_value=built) as builder:
+            result = process(
+                self.video,
+                TranscribeOptions(auto_glossary=True, scan_duration=1.0, output_dir=self.out),
+            )
+
+        self.assertTrue(builder.called)
+        self.assertEqual(builder.call_args[0][0], "粗转写文本")  # 第一遍的粗转写被交给 LLM
+        self.assertEqual(len(self.stub.calls), 2)  # 粗转写 + 正式转写
+        self.assertIsNone(self.stub.calls[0].get("initial_prompt"))  # 第一遍不带提示词
+        self.assertIn("u(x)", self.stub.calls[1]["initial_prompt"])  # 第二遍带词表
+
+        payload = json.loads(result.json_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["glossary"]["source"], "llm")
+        self.assertEqual(payload["glossary"]["scan"]["chars"], 4)
+
+    def test_glossary_out_file_written(self) -> None:
+        glossary = Glossary(domain="数学分析", symbols=[SymbolRepair("右F4", "u(x)")])
+        target = self.out / "terms.json"
+        self.stub.texts = ["u(x) 可导"]
+        process(
+            self.video,
+            TranscribeOptions(glossary=glossary, glossary_out=target, output_dir=self.out),
+        )
+        saved = json.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual(saved["prompt"], "数学分析。符号：u(x)。")
 
 
 if __name__ == "__main__":

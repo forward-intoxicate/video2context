@@ -20,6 +20,11 @@ from typing import Any, Callable, Optional
 
 DEFAULT_MODEL = "large-v3"
 
+#: 这些精度只适用于 GPU，CPU 上加载会失败
+CPU_UNSUPPORTED_COMPUTE_TYPES = frozenset(
+    {"float16", "int8_float16", "bfloat16", "int8_bfloat16"}
+)
+
 #: faster-whisper 官方支持的全部模型名（与 faster_whisper.utils._MODELS 对齐）
 MODEL_CHOICES: tuple[str, ...] = (
     "tiny",
@@ -245,20 +250,31 @@ class Transcriber:
 
     # ------------------------------------------------------------------ 加载
 
+    def _cpu_compute_type(self) -> str:
+        """CPU 支持的精度与 GPU 不同：float16 / int8_float16 等在 CPU 上不可用。"""
+        if self.compute_type and self.compute_type not in CPU_UNSUPPORTED_COMPUTE_TYPES:
+            return self.compute_type
+        if self.compute_type:
+            self.log(
+                f"提示：compute_type={self.compute_type} 在 CPU 上不受支持，"
+                "已自动改用 int8（CPU 支持：int8 / int8_float32 / float32 / int16）"
+            )
+        return "int8"
+
     def _device_attempts(self) -> list[tuple[str, str]]:
         """按优先级给出 (device, compute_type) 尝试列表。"""
         wanted = self.device
         cuda_types = [self.compute_type] if self.compute_type else ["float16", "int8_float16"]
 
         if wanted == "cpu":
-            return [("cpu", self.compute_type or "int8")]
+            return [("cpu", self._cpu_compute_type())]
         if wanted.startswith("cuda"):
             return [(wanted, ct) for ct in cuda_types]
-        # auto：有 CUDA 就先试 GPU，失败再退 CPU
+        # auto：有 CUDA 就先试 GPU，失败再退 CPU（注意 CPU 要用 CPU 支持的精度）
         attempts: list[tuple[str, str]] = []
         if cuda_device_count() > 0:
             attempts += [("cuda", ct) for ct in cuda_types]
-        attempts.append(("cpu", self.compute_type or "int8"))
+        attempts.append(("cpu", self._cpu_compute_type()))
         return attempts
 
     def load(self) -> Transcriber:

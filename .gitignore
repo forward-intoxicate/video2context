@@ -9,6 +9,19 @@ models/
 *.wav
 *.part
 
+# 词表（可能含影片里的专有名词，按需决定是否提交）
+*.glossary.json
+
+# 第三方课程视频样例：为避免版权问题默认不提交（想提交就删掉这行）
+samples/formula.mp4
+
+# 密钥与本地配置：绝不能提交
+.env
+.env.*
+!.env.example
+*.key
+secrets.json
+
 # 仅本开发环境需要的沙箱兼容垫片（不属于工程内容）
 scripts/_sandbox/
 

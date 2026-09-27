@@ -11,8 +11,10 @@ from pathlib import Path
 from typing import Optional
 
 from . import __version__
+from .config import llm_settings
 from .ffmpeg_tools import format_hms, format_hms_ms
-from .pipeline import TranscribeOptions, process
+from .glossary import Glossary
+from .pipeline import TranscribeOptions, process, scan_and_build_glossary
 from .transcriber import DEFAULT_MODEL, RECOMMENDED_MODELS
 from .writers import SUPPORTED_FORMATS, parse_formats
 
@@ -199,6 +201,38 @@ def build_parser() -> argparse.ArgumentParser:
     clip.add_argument("--start", type=float, default=None, help="从第几秒开始（默认 0）")
     clip.add_argument("--duration", type=float, default=None, help="只处理多少秒")
 
+    gl = t.add_argument_group("领域词表（可选，用于修同音词/专有名词）")
+    gl.add_argument(
+        "--glossary",
+        default=None,
+        help="手写词表文件：一行一个；`错形 -> 正确` 表示还原（如 `右F4 -> u(x)`），单独一行视为术语",
+    )
+    gl.add_argument(
+        "--auto-glossary",
+        action="store_true",
+        help="自动两遍解码：先粗转写采样片段 → 交给大模型推断词表 → 再正式转写",
+    )
+    gl.add_argument("--scan-duration", type=float, default=90.0, help="第一遍采样秒数（默认 90）")
+    gl.add_argument(
+        "--scan-model",
+        default=None,
+        help="第一遍用的模型（默认与正式相同 —— 同模型只加载一次，省内存）",
+    )
+    gl.add_argument("--glossary-out", default=None, help="把词表写到文件，便于复用与人工复核")
+    gl.add_argument(
+        "--dry-run-glossary",
+        action="store_true",
+        help="只生成词表并打印，不做正式转写（推荐先跑这个确认词表）",
+    )
+    gl.add_argument(
+        "--no-verify-glossary",
+        action="store_true",
+        help="不校验偏置是否生效（默认会校验：期望符号命中 0 次就自动回退到无词表结果）",
+    )
+    gl.add_argument("--llm-base-url", default=None, help="大模型服务地址（默认读 V2C_LLM_BASE_URL）")
+    gl.add_argument("--llm-model", default=None, help="大模型名（默认读 V2C_LLM_MODEL）")
+    # 故意不提供 --llm-api-key：命令行参数会进进程列表与命令历史
+
     # --------------------------------------------------------------- webui
     w = sub.add_parser("webui", aliases=["web", "ui"], help="启动本地网页界面")
     w.add_argument("--host", default="127.0.0.1", help="监听地址（默认 127.0.0.1，仅本机可访问）")
@@ -237,6 +271,36 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
         print(f"参数错误：--temperature 需要数字或逗号分隔的数字，收到 {args.temperature!r}", file=sys.stderr)
         return 2
 
+    # ---- 词表相关校验 ---------------------------------------------------
+    glossary: Optional[Glossary] = None
+    if args.glossary:
+        try:
+            glossary = Glossary.from_file(args.glossary)
+        except FileNotFoundError:
+            print(f"参数错误：词表文件不存在：{args.glossary}", file=sys.stderr)
+            return 2
+        except OSError as exc:
+            print(f"参数错误：读取词表失败：{exc}", file=sys.stderr)
+            return 2
+        if not glossary.symbols and not glossary.terms:
+            print(f"参数错误：词表文件是空的：{args.glossary}", file=sys.stderr)
+            return 2
+
+    want_scan = bool(args.auto_glossary or args.dry_run_glossary) and glossary is None
+    if want_scan:
+        settings = llm_settings(base_url=args.llm_base_url, model=args.llm_model)
+        if not settings.configured:
+            print(
+                "错误：自动推断词表需要大模型密钥，但当前未配置。\n"
+                "请在工程根目录建一个 .env 文件（已在 .gitignore 中，不会被提交）：\n"
+                "    V2C_LLM_API_KEY=sk-你的密钥\n"
+                "    V2C_LLM_BASE_URL=https://api.deepseek.com\n"
+                "    V2C_LLM_MODEL=deepseek-chat\n"
+                "或设置环境变量 V2C_LLM_API_KEY。也可以用 --glossary 提供手写词表，完全离线。",
+                file=sys.stderr,
+            )
+            return 2
+
     options = TranscribeOptions(
         model=args.model,
         device=args.device,
@@ -261,12 +325,33 @@ def _cmd_transcribe(args: argparse.Namespace) -> int:
         cpu_threads=args.cpu_threads,
         start=args.start,
         duration=args.duration,
+        glossary=glossary,
+        auto_glossary=bool(args.auto_glossary or args.dry_run_glossary),
+        scan_duration=args.scan_duration,
+        scan_model=args.scan_model,
+        glossary_out=Path(args.glossary_out) if args.glossary_out else None,
+        verify_glossary=not args.no_verify_glossary,
+        llm_base_url=args.llm_base_url,
+        llm_model=args.llm_model,
     )
 
     quiet = args.quiet
     printer = ProgressPrinter(enabled=not quiet)
     log = (lambda _msg: None) if quiet else (lambda msg: print(f"  {msg}", file=sys.stderr))
     stream = (lambda line: print(line, flush=True)) if args.stream else None
+
+    # ---- 只生成词表（推荐先跑这一步，人工确认后再正式转写）--------------
+    if args.dry_run_glossary:
+        for item in args.inputs:
+            try:
+                built = scan_and_build_glossary(item, options, log_callback=log)
+            except Exception as exc:
+                print(f"[失败] {item}：{exc}", file=sys.stderr)
+                return 1
+            print(built.describe())
+            if options.glossary_out:
+                print(f"已写出：{options.glossary_out}", file=sys.stderr)
+        return 0
 
     def on_progress(processed: float, total: float, text: str) -> None:
         printer(processed, total, text)
@@ -342,6 +427,12 @@ def _cmd_doctor(_args: argparse.Namespace) -> int:
             print(f"  CUDA 运行库目录    : {', '.join(dll_dirs)}")
     except Exception as exc:
         print(f"  CUDA 检测          : 失败（{type(exc).__name__}: {exc}）")
+
+    from .config import find_env_file
+
+    env_file = find_env_file()
+    print(f"  配置文件 .env      : {env_file if env_file else '未找到（不影响命令行基础功能）'}")
+    print(f"  大模型（词表推断） : {llm_settings().describe()}")
 
     import os
 
