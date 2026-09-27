@@ -57,6 +57,22 @@ cd video2context
 > **不需要单独安装 ffmpeg**：依赖里的 `imageio-ffmpeg` 自带静态 ffmpeg 可执行文件。
 > 想用系统 ffmpeg 的话，设环境变量 `FFMPEG_BIN=<ffmpeg 完整路径>` 即可。
 
+**Linux 上如果 `python3 -m venv` 报 `ensurepip is not available`**，
+先补系统包再重跑安装脚本（Debian / Ubuntu，发行版不同名字略有差异）：
+
+```bash
+sudo apt install python3-venv python3-pip
+```
+
+**Anaconda 用户**若遇到 venv 建不起来（`ensurepip` 被裁剪），
+安装脚本已内置绕法（先 `--without-pip` 建空环境，再用主解释器的 pip 灌进去）；
+手工操作就是：
+
+```bash
+python -m venv --without-pip .venv
+python -m pip --python .venv/bin/python install --upgrade pip
+```
+
 ---
 
 ## 2. 路线 A：只部署 Qwen3-ASR（默认，推荐）
