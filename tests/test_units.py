@@ -98,6 +98,30 @@ class TestCliHelpers(unittest.TestCase):
             _parse_temperature("热")
 
 
+class TestDeviceSelection(unittest.TestCase):
+    """CPU 不支持 float16 / int8_float16 —— 自动降级时不能沿用它。"""
+
+    def _attempts(self, device: str, compute_type: str):
+        from video2context.transcriber import Transcriber
+
+        return Transcriber("x", device=device, compute_type=compute_type)._device_attempts()
+
+    def test_cpu_downgrades_gpu_only_precision(self) -> None:
+        self.assertEqual(self._attempts("cpu", "int8_float16"), [("cpu", "int8")])
+        self.assertEqual(self._attempts("cpu", "float16"), [("cpu", "int8")])
+
+    def test_cpu_keeps_supported_precision(self) -> None:
+        self.assertEqual(self._attempts("cpu", "int8"), [("cpu", "int8")])
+        self.assertEqual(self._attempts("cpu", "float32"), [("cpu", "float32")])
+
+    def test_gpu_keeps_requested_precision(self) -> None:
+        self.assertEqual(self._attempts("cuda", "int8_float16"), [("cuda", "int8_float16")])
+
+    def test_auto_ends_with_cpu_safe_precision(self) -> None:
+        attempts = self._attempts("auto", "int8_float16")
+        self.assertEqual(attempts[-1], ("cpu", "int8"))
+
+
 class TestOomDetection(unittest.TestCase):
     def test_detects_memory_errors(self) -> None:
         self.assertTrue(_is_out_of_memory(RuntimeError("CUDA failed with error out of memory")))

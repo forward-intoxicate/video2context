@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: ["**"]   # 所有分支都跑，特性分支不必等 PR 就能拿到反馈
   pull_request:
   workflow_dispatch:
 
@@ -73,3 +73,5 @@ jobs:
       - run: ruff check video2context tests scripts
       - name: 校验文档相对链接与锚点
         run: python scripts/check_docs.py
+      - name: 防泄露扫描（密钥）
+        run: python scripts/check_secrets.py --all
