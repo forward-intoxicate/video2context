@@ -53,10 +53,11 @@ ProgressCallback = Callable[[float, float, str], None]
 DEFAULT_QWEN_REPO = "Qwen/Qwen3-ASR-1.7B"
 DEFAULT_ALIGNER_REPO = "Qwen/Qwen3-ForcedAligner-0.6B"
 
-#: 工程内默认的本地目录（scripts/setup 会把模型下到这里）
-LOCAL_QWEN_DIR = Path("models") / "Qwen3-ASR-1.7B"
-LOCAL_QWEN_SMALL_DIR = Path("models") / "Qwen3-ASR-0.6B"
-LOCAL_ALIGNER_DIR = Path("models") / "Qwen3-ForcedAligner-0.6B"
+#: 默认的本地模型**子目录名**（根目录默认是工程内的 ``models/``，
+#: 可用 ``V2C_MODELS_DIR`` 改到别处 —— 服务器上常把代码和权重分开放）
+LOCAL_QWEN_DIR = "Qwen3-ASR-1.7B"
+LOCAL_QWEN_SMALL_DIR = "Qwen3-ASR-0.6B"
+LOCAL_ALIGNER_DIR = "Qwen3-ForcedAligner-0.6B"
 
 #: 句末标点：出现在某个 token 之后就断句
 SENTENCE_END_CHARS = "。！？!?…；;"
@@ -143,11 +144,18 @@ def find_local_model(*candidates: Path) -> Optional[str]:
     return None
 
 
+def _models_root() -> Path:
+    """模型根目录（默认工程内 ``models/``，可用 V2C_MODELS_DIR 改）。"""
+    from .config import models_root
+
+    return models_root()
+
+
 def resolve_qwen_model(value: Optional[str], *, small: bool = False) -> str:
     """把用户给的模型参数解析成可直接加载的路径或仓库名。"""
     if value:
         return value
-    root = _project_root()
+    root = _models_root()
     order = [root / LOCAL_QWEN_DIR, root / LOCAL_QWEN_SMALL_DIR] if not small else [
         root / LOCAL_QWEN_SMALL_DIR,
         root / LOCAL_QWEN_DIR,
@@ -162,7 +170,7 @@ def resolve_aligner(value: Optional[str]) -> Optional[str]:
         return None
     if value:
         return value
-    found = find_local_model(_project_root() / LOCAL_ALIGNER_DIR)
+    found = find_local_model(_models_root() / LOCAL_ALIGNER_DIR)
     return found or DEFAULT_ALIGNER_REPO
 
 

@@ -35,6 +35,8 @@ esac
 torch_index="${TORCH_INDEX:-cu126}"
 mirror="${PIP_MIRROR:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 skip_models="${SKIP_MODELS:-0}"
+# 模型根目录：默认工程内的 models/，可用 V2C_MODELS_DIR 指到别处（代码与权重分开放）
+models_dir="${V2C_MODELS_DIR:-$root/models}"
 
 want_whisper=0
 want_qwen=0
@@ -91,7 +93,7 @@ fi
 if [ "$want_qwen" = "1" ]; then
     echo "[4/4] 部署 Qwen3-ASR 独立环境 ..."
     # 模型下载交给 setup_qwen.sh（识别模型 + 强制对齐模型，两者默认都下）
-    TORCH_INDEX="$torch_index" PIP_MIRROR="$mirror" SKIP_MODELS="$skip_models" \
+    TORCH_INDEX="$torch_index" PIP_MIRROR="$mirror" SKIP_MODELS="$skip_models" V2C_MODELS_DIR="$models_dir" \
         bash "$root/scripts/setup_qwen.sh"
 else
     echo "[4/4] 跳过 Qwen3-ASR"
@@ -99,9 +101,9 @@ fi
 
 # ---------------------------------------------------------------- Whisper 模型
 if [ "$want_whisper" = "1" ] && [ "$skip_models" != "1" ] \
-    && [ ! -f "models/faster-whisper-large-v3/model.bin" ]; then
+    && [ ! -f "$models_dir/faster-whisper-large-v3/model.bin" ]; then
     echo "[i] 下载 Whisper large-v3（约 3GB，支持断点续传）..."
-    "$venv_py" scripts/download_model.py large-v3 --source modelscope --out models/faster-whisper-large-v3
+    "$venv_py" scripts/download_model.py large-v3 --source modelscope --out "$models_dir/faster-whisper-large-v3"
 fi
 
 # ---------------------------------------------------------------- 自检
@@ -121,10 +123,10 @@ if [ "$skip_models" = "1" ]; then
     echo "注意：这次跳过了模型下载。第一次运行会自动下，但走 HuggingFace、国内会慢。"
     echo "建议现在补下（可断点续传）："
     if [ "$want_qwen" = "1" ]; then
-        echo "  .venv/bin/python scripts/download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out models/Qwen3-ASR-1.7B"
-        echo "  .venv/bin/python scripts/download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out models/Qwen3-ForcedAligner-0.6B"
+        echo "  .venv/bin/python scripts/download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out $models_dir/Qwen3-ASR-1.7B"
+        echo "  .venv/bin/python scripts/download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out $models_dir/Qwen3-ForcedAligner-0.6B"
     fi
     if [ "$want_whisper" = "1" ]; then
-        echo "  .venv/bin/python scripts/download_model.py large-v3 --source modelscope --out models/faster-whisper-large-v3"
+        echo "  .venv/bin/python scripts/download_model.py large-v3 --source modelscope --out $models_dir/faster-whisper-large-v3"
     fi
 fi

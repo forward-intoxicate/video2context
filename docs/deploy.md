@@ -524,6 +524,64 @@ tmux new -s v2c
 
 ---
 
+### 9.7 把代码和权重分开放
+
+三种情况会碰到这个：权重想放数据盘、多个工程共用一份权重、**已经装好了想把代码挪个位置**。
+
+**机制**：程序按两个位置去找东西，都能用环境变量改：
+
+| 变量 | 管什么 | 不设会怎样 |
+|---|---|---|
+| `V2C_MODELS_DIR` | 模型根目录（找 `Qwen3-ASR-1.7B` / `Qwen3-ForcedAligner-0.6B` / Whisper 目录） | 去工程内的 `models/` 找，找不到就联网下载 |
+| `V2C_QWEN_PYTHON` | Qwen 独立环境的解释器 | 找工程内的 `.venv-qwen`，找不到就用不了 Qwen 引擎 |
+
+主环境 `.venv` **不需要**跟着代码走 —— 用绝对路径调用它的 `python` 就行。
+
+#### 方式一：软链接（推荐，零配置）
+
+把 `.venv-qwen` 和 `models` 链接到新代码目录下，程序按默认路径就能找到：
+
+```bash
+cd /新路径/video2context
+ln -s /root/autodl-tmp/video2context/models      models
+ln -s /root/autodl-tmp/video2context/.venv-qwen  .venv-qwen
+ln -s /root/autodl-tmp/video2context/.venv       .venv   # 想用 ./.venv/bin/python 才需要
+
+./.venv/bin/python -m video2context samples/demo_zh_math.mp4 --language zh -f json,srt
+```
+
+> Windows 上软链接要管理员权限，用目录联接代替：`mklink /J models <目标>`。
+
+#### 方式二：环境变量（不动文件系统）
+
+```bash
+export V2C_MODELS_DIR=/root/autodl-tmp/video2context/models
+export V2C_QWEN_PYTHON=/root/autodl-tmp/video2context/.venv-qwen/bin/python
+# 想长期生效就追加到 ~/.bashrc
+```
+
+#### 已经装好、只想挪代码
+
+```bash
+# 1) 新位置拿一份代码（git clone 或 cp -r）。注意别顺手把 .venv* 和 models 也搬过去。
+cd /root && git clone https://github.com/forward-intoxicate/video2context.git v2c && cd v2c
+
+# 2) 指回原地的环境与权重（方式一）
+ln -s /root/autodl-tmp/video2context/models     models
+ln -s /root/autodl-tmp/video2context/.venv-qwen .venv-qwen
+ln -s /root/autodl-tmp/video2context/.venv      .venv
+
+# 3) 确认（doctor 里两个模型路径应指向你的数据盘）
+./.venv/bin/python -m video2context doctor
+```
+
+> ⚠️ **不要直接 `mv` 一个 venv** —— 里面写死了绝对路径（`bin/activate` 的 `VIRTUAL_ENV`、
+> 控制台脚本的 shebang）。用 `bin/python -m ...` 调用通常还能跑，
+> 但 `source bin/activate` 一定会指错地方。真要换位置就删掉重建
+> （`bash scripts/setup.sh` 是幂等的，重跑即可）。
+
+---
+
 ## 10. 离线部署（内网机器 / 不能联网）
 
 在**有网**的机器上把环境和模型都准备好，然后整目录拷过去：

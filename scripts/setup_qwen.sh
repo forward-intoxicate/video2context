@@ -27,6 +27,8 @@ echo "工程目录：$ROOT"
 # TORCH_INDEX 用 PyTorch 官方索引的目录名：cu126 / cu124 / cu121 / cpu
 TORCH_INDEX="${TORCH_INDEX:-cu126}"
 MIRROR="${PIP_MIRROR:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+# 模型根目录：默认工程内的 models/，可用 V2C_MODELS_DIR 指到别处（代码与权重分开放）
+MODELS_DIR="${V2C_MODELS_DIR:-$ROOT/models}"
 
 #: 建 venv 时如果自带的 ensurepip 不可用（conda 的 python 常见），
 #: 退回"先建空环境、再用外部 pip 灌进去"。
@@ -87,9 +89,9 @@ if [ "${SKIP_MODELS:-0}" = "1" ]; then
 else
     # 对齐模型不是可选项：没有它，字幕时间会掉到最粗的一档（见文件开头说明）。
     echo "[i] 下载识别模型（约 4GB，支持断点续传，中断后重跑即可接着下）..."
-    "$MAIN_PY" scripts/download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out models/Qwen3-ASR-1.7B
+    "$MAIN_PY" scripts/download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out "$MODELS_DIR/Qwen3-ASR-1.7B"
     echo "[i] 下载强制对齐模型（约 1.8GB，字幕精确到词就靠它）..."
-    "$MAIN_PY" scripts/download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out models/Qwen3-ForcedAligner-0.6B
+    "$MAIN_PY" scripts/download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out "$MODELS_DIR/Qwen3-ForcedAligner-0.6B"
 fi
 
 echo ""
@@ -98,6 +100,6 @@ echo "  .venv/bin/python -m video2context 我的视频.mp4"
 if [ "${SKIP_MODELS:-0}" = "1" ]; then
     echo ""
     echo "记得补下模型（约 6GB；第一次运行也会自动下，但走 HuggingFace、国内会慢）："
-    echo "  .venv/bin/python scripts/download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out models/Qwen3-ASR-1.7B"
-    echo "  .venv/bin/python scripts/download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out models/Qwen3-ForcedAligner-0.6B"
+    echo "  .venv/bin/python scripts/download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out "$MODELS_DIR/Qwen3-ASR-1.7B""
+    echo "  .venv/bin/python scripts/download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out "$MODELS_DIR/Qwen3-ForcedAligner-0.6B""
 fi

@@ -37,6 +37,10 @@ DEFAULT_TIMEOUT = 120.0
 DEFAULT_ENGINE = "qwen3-asr"
 ENGINE_ENV_VAR = "V2C_ENGINE"
 
+#: 模型根目录。默认是工程内的 ``models/``；设了 ``V2C_MODELS_DIR`` 就用它 ——
+#: 服务器上常把代码与权重分开放（权重放数据盘、或多个工程共用一份）。
+MODELS_DIR_ENV_VAR = "V2C_MODELS_DIR"
+
 #: 需要在日志/输出里打码的密钥模式
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_\-]{8,}"),
@@ -132,6 +136,23 @@ def configured_engine(load_env: bool = True) -> str:
         if env_file:
             load_env_file(env_file)
     return os.environ.get(ENGINE_ENV_VAR, "").strip()
+
+
+def models_root(load_env: bool = True) -> Path:
+    """模型根目录。
+
+    默认是工程内的 ``models/``；设了 ``V2C_MODELS_DIR``（环境变量或 ``.env``）就用它。
+    这样"代码放一处、权重放另一处"不用每次在命令行上传路径 —— 服务器上很常见：
+    权重放数据盘、或者多个工程共用一份，省得重复下 6GB。
+    """
+    if load_env:
+        env_file = find_env_file()
+        if env_file:
+            load_env_file(env_file)
+    configured = os.environ.get(MODELS_DIR_ENV_VAR, "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return PROJECT_ROOT / "models"
 
 
 # --------------------------------------------------------- 解释器环境诊断

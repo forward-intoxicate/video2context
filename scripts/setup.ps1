@@ -29,6 +29,11 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 Write-Host "工程目录：$root" -ForegroundColor Cyan
 
+# 模型根目录：默认工程内的 models\，可用环境变量 V2C_MODELS_DIR 指到别处
+# （服务器上常把代码和权重分开放：权重放数据盘，或多个工程共用一份）
+$modelsDir = if ($env:V2C_MODELS_DIR) { $env:V2C_MODELS_DIR } else { Join-Path $root "models" }
+Write-Host "模型目录：$modelsDir" -ForegroundColor DarkGray
+
 $wantWhisper = @("whisper", "both") -contains $Engine
 $wantQwen = @("qwen", "both") -contains $Engine
 
@@ -83,7 +88,7 @@ if ($wantQwen) {
 }
 
 # ---------------------------------------------------------------- Whisper 模型
-$whisperModel = Join-Path $root "models\faster-whisper-large-v3"
+$whisperModel = Join-Path $modelsDir "faster-whisper-large-v3"
 if ($wantWhisper -and -not $SkipModels -and -not (Test-Path (Join-Path $whisperModel "model.bin"))) {
     Write-Host "[i] 下载 Whisper large-v3（约 3GB，支持断点续传）..." -ForegroundColor Cyan
     & $py scripts\download_model.py large-v3 --source modelscope --out $whisperModel
@@ -103,10 +108,10 @@ if ($SkipModels) {
     Write-Host "注意：这次跳过了模型下载。第一次运行会自动下，但走 HuggingFace、国内会慢。" -ForegroundColor Yellow
     Write-Host "建议现在补下（可断点续传）：" -ForegroundColor Yellow
     if ($wantQwen) {
-        Write-Host "  .\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out models\Qwen3-ASR-1.7B"
-        Write-Host "  .\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out models\Qwen3-ForcedAligner-0.6B"
+        Write-Host "  .\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out $modelsDir\Qwen3-ASR-1.7B"
+        Write-Host "  .\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out $modelsDir\Qwen3-ForcedAligner-0.6B"
     }
     if ($wantWhisper) {
-        Write-Host "  .\.venv\Scripts\python scripts\download_model.py large-v3 --source modelscope --out models\faster-whisper-large-v3"
+        Write-Host "  .\.venv\Scripts\python scripts\download_model.py large-v3 --source modelscope --out $modelsDir\faster-whisper-large-v3"
     }
 }

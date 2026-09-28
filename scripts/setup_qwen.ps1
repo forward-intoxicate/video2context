@@ -91,9 +91,9 @@ if ($SkipModels) {
 } else {
     # 对齐模型不是可选项：没有它，字幕时间会掉到最粗的一档（见文件开头说明）。
     Write-Host "[i] 下载识别模型（约 4GB，支持断点续传，中断后重跑即可接着下）..." -ForegroundColor Cyan
-    & $mainPy scripts\download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out models\Qwen3-ASR-1.7B
+    & $mainPy scripts\download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out "$modelsDir\Qwen3-ASR-1.7B"
     Write-Host "[i] 下载强制对齐模型（约 1.8GB，字幕精确到词就靠它）..." -ForegroundColor Cyan
-    & $mainPy scripts\download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out models\Qwen3-ForcedAligner-0.6B
+    & $mainPy scripts\download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out "$modelsDir\Qwen3-ForcedAligner-0.6B"
 }
 
 Write-Host ""
@@ -102,6 +102,6 @@ Write-Host "  .\.venv\Scripts\python -m video2context 我的视频.mp4"
 if ($SkipModels) {
     Write-Host ""
     Write-Host "记得补下模型（约 6GB；第一次运行也会自动下，但走 HuggingFace、国内会慢）：" -ForegroundColor Yellow
-    Write-Host "  .\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out models\Qwen3-ASR-1.7B"
-    Write-Host "  .\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out models\Qwen3-ForcedAligner-0.6B"
+    Write-Host "  .\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ASR-1.7B --source modelscope --out $modelsDir\Qwen3-ASR-1.7B"
+    Write-Host "  .\.venv\Scripts\python scripts\download_model.py --repo Qwen/Qwen3-ForcedAligner-0.6B --source modelscope --out $modelsDir\Qwen3-ForcedAligner-0.6B"
 }

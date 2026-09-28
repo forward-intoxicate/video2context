@@ -13,7 +13,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from video2context.config import DEFAULT_ENGINE, ENGINE_ENV_VAR, configured_engine  # noqa: E402
+from video2context.config import (  # noqa: E402
+    DEFAULT_ENGINE,
+    ENGINE_ENV_VAR,
+    configured_engine,
+    models_root,
+)
 from video2context.glossary import Glossary, SymbolRepair  # noqa: E402
 from video2context.pipeline import (  # noqa: E402
     ENGINE_CHOICES,
@@ -291,6 +296,59 @@ class GlossaryPromptTest(unittest.TestCase):
 
     def test_no_glossary_and_no_prompt(self) -> None:
         self.assertIsNone(glossary_prompt_for(TranscribeOptions(), None))
+
+
+class ModelsDirTest(unittest.TestCase):
+    """模型根目录可配置 —— 服务器上常把代码和权重分开放。"""
+
+    def setUp(self) -> None:
+        self._saved = {key: os.environ.get(key) for key in ("V2C_MODELS_DIR", "V2C_ENV_FILE")}
+        # 指向不存在的文件，避免开发机上真实的 .env 干扰
+        os.environ["V2C_ENV_FILE"] = str(Path(__file__).resolve().parent / "_no_such_env_file")
+        os.environ.pop("V2C_MODELS_DIR", None)
+
+    def tearDown(self) -> None:
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def test_default_is_models_inside_the_project(self) -> None:
+        self.assertEqual(models_root().name, "models")
+
+    def test_env_var_redirects_the_root(self) -> None:
+        os.environ["V2C_MODELS_DIR"] = str(Path("/data/weights"))
+        self.assertEqual(models_root(), Path("/data/weights"))
+
+    def test_qwen_model_and_aligner_are_found_under_the_custom_root(self) -> None:
+        """在自定义根目录下放一份假模型，两个解析函数都该找到它。"""
+        import tempfile
+
+        from video2context.qwen_engine import resolve_aligner, resolve_qwen_model
+
+        with tempfile.TemporaryDirectory() as tmp:
+            big = Path(tmp) / "Qwen3-ASR-1.7B"
+            aligner = Path(tmp) / "Qwen3-ForcedAligner-0.6B"
+            for directory in (big, aligner):
+                directory.mkdir()
+                (directory / "config.json").write_text("{}", encoding="utf-8")
+
+            os.environ["V2C_MODELS_DIR"] = tmp
+            self.assertEqual(Path(resolve_qwen_model(None)), big)
+            self.assertEqual(Path(resolve_aligner(None) or ""), aligner)
+
+    def test_explicit_path_still_wins(self) -> None:
+        from video2context.qwen_engine import resolve_qwen_model
+
+        os.environ["V2C_MODELS_DIR"] = str(Path("/data/weights"))
+        self.assertEqual(resolve_qwen_model("/somewhere/else"), "/somewhere/else")
+
+    def test_aligner_can_still_be_disabled(self) -> None:
+        from video2context.qwen_engine import resolve_aligner
+
+        os.environ["V2C_MODELS_DIR"] = str(Path("/data/weights"))
+        self.assertIsNone(resolve_aligner("off"))
 
 
 class TimestampSourceTest(unittest.TestCase):
