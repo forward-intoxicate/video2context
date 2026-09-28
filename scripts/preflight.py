@@ -180,9 +180,18 @@ def _recommend_torch_index(cuda: Optional[str]) -> Optional[str]:
 
 
 def _disk_of(path: Path) -> Optional[dict[str, Any]]:
+    """取路径所在文件系统的空间；不存在、或没权限读就返回 None。
+
+    **注意**：``path.exists()`` 本身就可能抛 ``PermissionError``
+    （父目录不可读时 stat 会失败），所以"存在性判断"和"取空间"必须一起包在 try 里。
+    我们在 CI 上正是这么栽的：GitHub runner 上 `/root/autodl-tmp` 存在，
+    但 runner 用户读不到它，``exists()`` 直接抛错。
+    """
     try:
+        if not path.exists():
+            return None
         usage = shutil.disk_usage(path)
-    except OSError:
+    except (OSError, ValueError):
         return None
     return {
         "path": str(path),
@@ -206,10 +215,9 @@ def collect() -> Report:
     report.project_dir = str(PROJECT_ROOT)
 
     # 磁盘：工程目录 / 用户目录 / 常见的数据盘挂载点（AutoDL 等云容器）
+    # 探测本身就带容错（路径不存在或没权限），所以这里不需要先判断存在性
     seen: set[str] = set()
     for path in (PROJECT_ROOT, Path.home(), Path("/root/autodl-tmp"), Path("/data"), Path("/mnt")):
-        if not path.exists():
-            continue
         info = _disk_of(path)
         if info and info["path"] not in seen:
             seen.add(info["path"])

@@ -1029,7 +1029,7 @@ video2context/
 
 ```bash
 pip install -r requirements-dev.txt
-python -m unittest discover -s tests -v    # 120 项测试，离线、不需要模型和显卡、不需要密钥
+python -m unittest discover -s tests -v    # 121 项测试，离线、不需要模型和显卡、不需要密钥
 ruff check video2context tests scripts      # 代码检查
 python scripts/check_docs.py                # 文档链接与锚点
 python scripts/check_secrets.py --all       # 防泄露扫描

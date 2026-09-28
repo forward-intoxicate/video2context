@@ -402,6 +402,17 @@ class PreflightTest(unittest.TestCase):
 
     # ----------------------------------------------------------- 真实机器冒烟
 
+    def test_disk_probe_survives_permission_error(self) -> None:
+        """路径存在但读不到时必须安静跳过，不能让整次体检崩掉。
+
+        CI 上就是踩了这个：GitHub runner 的 /root/autodl-tmp 存在但读不到，
+        ``path.exists()`` 直接抛 PermissionError。
+        """
+        module = self._preflight()
+        blocked = Path("/root/autodl-tmp")
+        with mock.patch.object(Path, "exists", side_effect=PermissionError(13, "Permission denied", str(blocked))):
+            self.assertIsNone(module._disk_of(blocked))
+
     def test_collect_is_robust_on_any_machine(self) -> None:
         """collect() 只要求"不崩、字段类型对" —— 不能假设机器的具体情况。"""
         module = self._preflight()
