@@ -46,7 +46,7 @@ video2context doctor
 ## 2. 测试策略
 
 ```bash
-python -m unittest discover -s tests -v   # 109 项，约 4 秒
+python -m unittest discover -s tests -v   # 114 项，约 9 秒
 pytest                                      # 同样的用例（pyproject 已配好）
 ```
 

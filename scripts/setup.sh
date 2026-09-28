@@ -50,7 +50,14 @@ fi
 # ---------------------------------------------------------------- 主环境
 if [ ! -x ".venv/bin/python" ]; then
     echo "[1/4] 创建主虚拟环境 .venv ..."
-    "$python_bin" -m venv .venv
+    # conda 自带的 python 有时引导不了 pip（ensurepip 被裁剪掉），
+    # 那就先建一个不带 pip 的空环境，再用基础解释器的 pip 灌进去。
+    if ! "$python_bin" -m venv .venv 2>/dev/null; then
+        echo "      venv 自带的 ensurepip 不可用 → 改用 --without-pip + 外部 pip"
+        rm -rf .venv
+        "$python_bin" -m venv --without-pip .venv
+        "$python_bin" -m pip --python "$root/.venv/bin/python" install --upgrade pip
+    fi
 else
     echo "[1/4] 已存在主环境 .venv，跳过创建"
 fi

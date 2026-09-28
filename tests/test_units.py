@@ -296,5 +296,55 @@ class DoctorInterpreterWarningTest(unittest.TestCase):
         self.assertEqual(text.count("你现在用的不是工程的虚拟环境"), 1)
 
 
+class PreflightTest(unittest.TestCase):
+    """部署前体检：CUDA → torch 索引的推荐逻辑（服务器上最容易选错的一步）。"""
+
+    @staticmethod
+    def _preflight():
+        import sys as _sys
+
+        scripts = str(Path(__file__).resolve().parents[1] / "scripts")
+        if scripts not in _sys.path:
+            _sys.path.insert(0, scripts)
+        import preflight
+
+        return preflight
+
+    def test_picks_newest_supported_index(self) -> None:
+        recommend = self._preflight()._recommend_torch_index
+        # CUDA 向后兼容：驱动支持 12.6 就能跑 cu126，只支持 12.4 则最高到 cu124
+        self.assertEqual(recommend("12.6"), "cu126")
+        self.assertEqual(recommend("12.4"), "cu124")
+        self.assertEqual(recommend("12.3"), "cu121")
+        self.assertEqual(recommend("12.2"), "cu121")
+
+    def test_newer_driver_still_uses_newest_wheel(self) -> None:
+        # cu126 是列表里最新的，驱动更新时仍然推荐它
+        self.assertEqual(self._preflight()._recommend_torch_index("13.0"), "cu126")
+
+    def test_too_old_or_unknown_returns_none(self) -> None:
+        recommend = self._preflight()._recommend_torch_index
+        for value in ("11.8", "12.0", None, "不是版本号"):
+            self.assertIsNone(recommend(value))
+
+    def test_suggested_commands_are_bash_syntax(self) -> None:
+        """建议命令是给 Linux 服务器用的，不能混进 PowerShell 的 -Torch 参数。"""
+        module = self._preflight()
+        report = module.collect()
+        text = "\n".join(module.suggested_commands(report, "qwen"))
+        self.assertIn("TORCH_INDEX=", text)
+        self.assertNotIn("-Torch ", text)
+        self.assertIn("HF_HOME", text)
+
+    def test_collect_runs_on_this_machine(self) -> None:
+        module = self._preflight()
+        report = module.collect()
+        self.assertTrue(report.project_dir)
+        self.assertGreater(report.cpu_count, 0)
+        problems, warnings = module.evaluate(report, "whisper")
+        self.assertIsInstance(problems, list)
+        self.assertIsInstance(warnings, list)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -101,6 +101,18 @@
 需要 Python ≥ 3.9（**3.11 / 3.12 / 3.13 最稳**；网页界面需要 3.10+）。
 Linux 上如果 `python3 -m venv` 报 `ensurepip is not available`，先 `sudo apt install python3-venv`。
 
+> **在服务器 / 云 GPU 容器（AutoDL 等）上装？** 先跑一次**部署前体检** ——
+> 只看不装、只用标准库，会告诉你这台机器够不够、该用哪个 CUDA 版本的 torch、
+> 工程该放哪个盘，并直接给出能照抄的安装命令：
+>
+> ```bash
+> git clone https://github.com/forward-intoxicate/video2context.git
+> cd video2context
+> python3 scripts/preflight.py
+> ```
+>
+> 详见 [docs/deploy.md 第 9 节](docs/deploy.md#9-服务器--云-gpu-容器autodl-等)。
+
 ### 第 1 步 · 克隆仓库
 
 ```bash
@@ -993,6 +1005,7 @@ video2context/
 │  ├─ run_web.ps1 / run_web.sh
 │  ├─ download_model.py      # 模型分块断点续传下载器（HF / 魔搭双源，纯标准库）
 │  ├─ make_samples.py        # 离线生成 samples/ 里的示例视频（本机 TTS + ffmpeg）
+│  ├─ preflight.py           # 部署前体检：机器够不够 / 该用哪个 CUDA 版 torch（只看不装）
 │  ├─ check_docs.py          # 文档链接与锚点校验
 │  └─ check_secrets.py       # 提交前防泄露扫描
 ├─ tests/                    # 离线单元测试（不需要模型和显卡）
@@ -1016,7 +1029,7 @@ video2context/
 
 ```bash
 pip install -r requirements-dev.txt
-python -m unittest discover -s tests -v    # 109 项测试，离线、不需要模型和显卡、不需要密钥
+python -m unittest discover -s tests -v    # 114 项测试，离线、不需要模型和显卡、不需要密钥
 ruff check video2context tests scripts      # 代码检查
 python scripts/check_docs.py                # 文档链接与锚点
 python scripts/check_secrets.py --all       # 防泄露扫描

@@ -365,7 +365,166 @@ python -m video2context --engine qwen3-asr --qwen-setup   # 只看 Qwen 那一�
 
 ---
 
-## 9. 离线部署（内网机器 / 不能联网）
+## 9. 服务器 / 云 GPU 容器（AutoDL 等）
+
+云容器和本机有两个关键差异（**磁盘布局**和**已有的 conda 环境**），先解决再装能少走很多弯路。
+
+### 9.1 先体检：这台机器够不够、该用哪个 torch
+
+工程带了一个**只看不装**的体检脚本，在装任何依赖之前就能跑（只用标准库）：
+
+```bash
+git clone https://github.com/forward-intoxicate/video2context.git
+cd video2context
+
+python3 scripts/preflight.py                     # 按默认路线（Qwen）评估
+python3 scripts/preflight.py --engine whisper    # 按 Whisper 路线评估
+python3 scripts/preflight.py --json              # 输出 JSON，便于自动化
+```
+
+它会打印系统 / Python / 内存 / GPU / 各磁盘可用空间，给出结论，
+并**直接给出这台机器上能照抄的安装命令**：
+
+```
+video2context 部署前体检（只看不装）
+
+  系统         : Linux 5.15.0-119-generic  x86_64
+  Python       : 3.10.12 (/root/miniconda3/bin/python)
+  CPU          : 32 核
+  内存         : 总 60GB / 可用 55GB
+  GPU          : NVIDIA GeForce RTX 4090  显存共 24GB
+  CUDA         : 驱动上限 12.2 → 推荐 torch 索引 cu121
+
+  磁盘：
+    /root/video2context          可用    12.4GB / 共 30GB  ← 工程在这里
+    /root                        可用    12.4GB / 共 30GB
+    /root/autodl-tmp             可用   198.0GB / 共 200GB
+
+  结论：
+    ✗ 工程所在磁盘只剩 12.4GB，装 qwen 路线大约要 12GB。云容器常见做法是把工程放到数据盘（如 /root/autodl-tmp）再装。
+
+  建议的安装命令（Linux / macOS）：
+    ...
+```
+
+> 退出码：有问题返回 1，没问题返回 0 —— 可以直接写进部署脚本做前置校验。
+
+### 9.2 第一个坑：系统盘很小，别把模型装那儿
+
+云容器一般挂两块盘：
+
+| 挂载点 | 用途 | 典型大小 |
+|---|---|---|
+| `/`（含 `/root`） | 系统盘，跟镜像一起 | 30GB 左右 |
+| `/root/autodl-tmp` | 数据盘 | 几百 GB |
+
+Qwen 路线要 **约 9GB**（环境 3GB + 模型 6GB）。装到 30GB 的系统盘上很容易满，
+而系统盘一满，容器里会出现各种看不出原因的报错。两个动作：
+
+```bash
+# ① 把工程放到数据盘
+mkdir -p /root/autodl-tmp && cd /root/autodl-tmp
+git clone https://github.com/forward-intoxicate/video2context.git
+cd video2context
+
+# ② 让 HuggingFace 缓存也别写进系统盘（默认在 ~/.cache/huggingface）
+export HF_HOME=/root/autodl-tmp/hf-cache
+echo 'export HF_HOME=/root/autodl-tmp/hf-cache' >> ~/.bashrc   # 想长期生效
+```
+
+> 自带下载器（`scripts/download_model.py`）是把模型下到工程里的 `models/`，
+> 所以工程放数据盘就够了；`HF_HOME` 是给"首次运行自动下载"那条路兜底的。
+
+### 9.3 第二个坑：用 conda 环境还是工程的 venv？
+
+**推荐：用工程自带的 `.venv` / `.venv-qwen`，不要装进你现有的 conda 环境。**
+
+* 安装脚本在工程目录内建两个独立环境，**完全不碰你的 `base` / `courserebuild`**；
+* Qwen 把 `transformers` 钉在 4.57.6、`qwen-asr` 钉在 0.0.6 ——
+  塞进已经跑着别的项目的 conda 环境里，两边版本很可能互相打架；
+* 脚本只需要一个 `python3`（≥3.9）来**创建** venv，用 conda base 的 python 跑就行：
+
+```bash
+conda activate base                 # 用哪个 python 跑脚本都行，它只在工程内建 venv
+cd /root/autodl-tmp/video2context
+TORCH_INDEX=cu121 bash scripts/setup.sh
+```
+
+**确实想只用一个 conda 环境**（比如多人共用的机器）也可以 ——
+把公共依赖和 Qwen 依赖装进同一个环境，再让它自己当 Qwen 的运行时：
+
+```bash
+conda create -n v2c python=3.12 -y
+conda activate v2c
+pip install -r requirements-base.txt
+pip install torch --index-url https://download.pytorch.org/whl/cu121   # 按 9.1 的推荐选
+pip install -r requirements-qwen.txt
+
+export V2C_QWEN_PYTHON="$(which python)"    # 让 Qwen 引擎就用这个解释器
+python -m video2context samples/demo_zh_math.mp4 --language zh -f json,srt
+```
+
+这样默认引擎（`qwen3-asr`）直接用当前环境，不会再去找 `.venv-qwen`。
+**代价**：主环境不再"无 torch"；以后如果还要用 Whisper 引擎，版本冲突的风险就回来了，
+那时建议还是分开。这条路径实测过：一个解释器同时装 `imageio-ffmpeg` 与 torch/qwen-asr，
+`V2C_QWEN_PYTHON` 指向它自己，整条流水线正常跑通。
+
+### 9.4 conda 环境里建 venv 报 `ensurepip is not available`
+
+conda 的 python 有时被裁剪过，`python3 -m venv` 引导不了 pip。
+**安装脚本已经内置了绕法**（先 `--without-pip` 建空环境，再用外部 pip 灌进去），
+直接重跑脚本即可；手工操作是：
+
+```bash
+python3 -m venv --without-pip .venv
+python3 -m pip --python .venv/bin/python install --upgrade pip
+```
+
+### 9.5 选对 torch 的 CUDA 版本
+
+PyPI 上的 `pip install torch` 给的是 **CPU 版**，必须走 PyTorch 官方索引。
+选哪个由**驱动支持的 CUDA 版本**决定（`nvidia-smi` 抬头里的 `CUDA Version:`）：
+
+```bash
+nvidia-smi | head -3      # 看 "CUDA Version: 12.2" 这种
+```
+
+| nvidia-smi 显示 | 用哪个 |
+|---|---|
+| 12.6 及以上 | `TORCH_INDEX=cu126`（默认） |
+| 12.4 ～ 12.5 | `TORCH_INDEX=cu124` |
+| 12.1 ～ 12.3 | `TORCH_INDEX=cu121` |
+| 12.0 及以下 / 没有显卡 | `TORCH_INDEX=cpu`（Qwen 会非常慢，建议改走 Whisper 路线） |
+
+CUDA **向后兼容**：驱动支持 12.6 也能跑 cu121 的 wheel，反过来不行 ——
+所以拿不准就**选低一档**。`scripts/preflight.py` 会直接把这个值算好。
+
+### 9.6 在服务器上长时间跑
+
+长视频转写要几分钟到几十分钟，别让 SSH 断线把进程带走：
+
+```bash
+# 方式一：nohup + 看日志
+nohup ./.venv/bin/python -m video2context 长视频.mp4 -f json,srt,txt > run.log 2>&1 &
+tail -f run.log
+
+# 方式二：tmux（更推荐，能随时回去看输出）
+tmux new -s v2c
+./.venv/bin/python -m video2context 长视频.mp4 -f json,srt,txt
+# Ctrl+B 再按 D 脱离；tmux attach -t v2c 回去
+```
+
+想在浏览器里用网页界面（**默认没有鉴权，公网暴露前请自行加保护**）：
+
+```bash
+./.venv/bin/python -m video2context webui --host 0.0.0.0 --port 6006
+```
+
+> 云容器通常只开放少数端口，用之前先确认你买的实例允许哪个端口。
+
+---
+
+## 10. 离线部署（内网机器 / 不能联网）
 
 在**有网**的机器上把环境和模型都准备好，然后整目录拷过去：
 
@@ -397,7 +556,7 @@ $env:HF_HUB_OFFLINE = "1"
 
 ---
 
-## 10. 国内网络加速
+## 11. 国内网络加速
 
 ```powershell
 # pip 走清华源（安装脚本已经默认带上了 -i 参数）
@@ -412,7 +571,7 @@ $env:HF_HUB_OFFLINE = "1"
 
 ---
 
-## 11. 磁盘占用与卸载
+## 12. 磁盘占用与卸载
 
 | 内容 | 体积 | 怎么删 |
 |---|---|---|
@@ -427,7 +586,7 @@ $env:HF_HUB_OFFLINE = "1"
 
 ---
 
-## 12. 部署出问题？
+## 13. 部署出问题？
 
 先跑自检，它会把"缺哪一环"直接打出来：
 

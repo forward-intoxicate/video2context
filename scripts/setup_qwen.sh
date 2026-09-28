@@ -28,11 +28,25 @@ echo "工程目录：$ROOT"
 TORCH_INDEX="${TORCH_INDEX:-cu126}"
 MIRROR="${PIP_MIRROR:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 
+#: 建 venv 时如果自带的 ensurepip 不可用（conda 的 python 常见），
+#: 退回"先建空环境、再用外部 pip 灌进去"。
+create_venv() {
+    local target="$1" python_bin="$2"
+    if "$python_bin" -m venv "$target" 2>/dev/null; then
+        return 0
+    fi
+    echo "      venv 自带的 ensurepip 不可用 → 改用 --without-pip + 外部 pip"
+    rm -rf "$target"
+    "$python_bin" -m venv --without-pip "$target"
+    "$python_bin" -m pip --python "$target/bin/python" install --upgrade pip
+}
+
 # ------------------------------------------------- 主环境（只装公共依赖，不含 Whisper）
+PYTHON_BIN="${PYTHON:-python3}"
 MAIN_PY="$ROOT/.venv/bin/python"
 if [ ! -x "$MAIN_PY" ]; then
     echo "[1/5] 创建主环境 .venv（只装公共依赖，不含 Whisper）..."
-    python3 -m venv "$ROOT/.venv"
+    create_venv "$ROOT/.venv" "$PYTHON_BIN"
 else
     echo "[1/5] 已存在主环境 .venv"
 fi
@@ -45,7 +59,7 @@ PY="$VENV/bin/python"
 
 if [ ! -x "$PY" ]; then
     echo "[2/5] 创建独立环境 .venv-qwen ..."
-    python3 -m venv "$VENV"
+    create_venv "$VENV" "$PYTHON_BIN"
 else
     echo "[2/5] 已存在 .venv-qwen，跳过创建"
 fi
