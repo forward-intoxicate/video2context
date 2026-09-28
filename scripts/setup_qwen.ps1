@@ -18,8 +18,8 @@
 # 也就没有 VAD**，会掉到最粗的一档（在整条音轨上平均分配，长静音视频字幕会明显错位）。
 # 装上它就直接精确到词。详见 docs/troubleshooting.md 7.4。
 param(
-    [ValidateSet("cu126", "cu124", "cu121", "cpu", "none")]
-    [string]$Torch = "cu126",
+    [ValidateSet("", "cu128", "cu126", "cu124", "cu121", "cpu", "none")]
+    [string]$Torch = "",
     [switch]$SkipModels,
     [string]$Mirror = "https://pypi.tuna.tsinghua.edu.cn/simple"
 )
@@ -29,6 +29,39 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 Write-Host "工程目录：$root" -ForegroundColor Cyan
+
+# 显卡算力 → 该用哪个 torch 索引（与 setup_qwen.sh 里的 detect_torch_index 同一套逻辑）。
+#
+# 为什么不能写死：Blackwell（RTX 50 系 / RTX PRO 6000 / B 系列）算力是 12.0，
+# 它的 kernel **只在 cu128 及以上的 wheel 里**。cu126 装上去能 import、
+# torch.cuda.is_available() 也返回 True，但一跑算子就炸：
+#   CUDA error: no kernel image is available for execution on the device
+function Get-TorchIndex {
+    $cc = ""
+    $cuda = ""
+    if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+        try { $cc = (nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits 2>$null | Select-Object -First 1) } catch { $cc = "" }
+        try {
+            $header = (nvidia-smi 2>$null | Out-String)
+            if ($header -match "CUDA Version:\s*([0-9]+\.[0-9]+)") { $cuda = $Matches[1] }
+        } catch { $cuda = "" }
+    }
+    $major = 0
+    $parsed = $false
+    if ($cc) { $parsed = [int]::TryParse((($cc -split "\.")[0]).Trim(), [ref]$major) }
+    if ($parsed -and $major -ge 12) { return "cu128" }
+    switch -Regex ($cuda) {
+        "^12\.(6|7|8|9)$|^13\." { return "cu126" }
+        "^12\.[45]$" { return "cu124" }
+        "^12\.[0-3]$" { return "cu121" }
+        default { return "cu126" }
+    }
+}
+
+if (-not $Torch) {
+    $Torch = Get-TorchIndex
+    Write-Host "[i] 按显卡自动选择 torch 索引：$Torch" -ForegroundColor DarkGray
+}
 
 # ------------------------------------------------- 主环境（只装公共依赖，不含 Whisper）
 $mainPy = Join-Path $root ".venv\Scripts\python.exe"
@@ -85,6 +118,22 @@ Write-Host "[5/5] 环境自检 ..." -ForegroundColor Cyan
 # 这行刻意用纯 ASCII：子进程 python 的 stdout 走控制台代码页（中文 Windows 上是 GBK），
 # 里面出现中文会显示成乱码；而 Write-Host 的中文有 BOM 保护，不受影响。
 & $py -c "import torch, transformers, qwen_asr; print('  torch', torch.__version__, '| cuda', torch.cuda.is_available(), '| transformers', transformers.__version__)"
+# 只打印 is_available 是不够的：装错 arch 时它照样是 True，要真算一次才暴露。
+# 这一步就是冲着 "no kernel image is available for execution on the device" 来的。
+$hasCuda = $false
+& $py -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)"
+if ($LASTEXITCODE -eq 0) { $hasCuda = $true }
+if ($hasCuda) {
+    & $py -c "import torch; a=torch.randn(8,8,device='cuda'); print('  GPU smoke test OK:', round((a@a).sum().item(),3))"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "" 
+        Write-Host "  [x] GPU 能识别但算不了 —— 几乎肯定是 torch 的 CUDA 版本和显卡架构不匹配。" -ForegroundColor Red
+        Write-Host "      当前 torch 编译进去的架构：" -ForegroundColor Red
+        & $py -c "import torch; print('   ', torch.cuda.get_arch_list())"
+        Write-Host "      按 docs/troubleshooting.md「no kernel image」一节换 wheel，再重跑本脚本。" -ForegroundColor Red
+        exit 1
+    }
+}
 & $mainPy -m video2context --engine qwen3-asr --qwen-setup
 
 if ($SkipModels) {

@@ -433,7 +433,8 @@ python -m video2context a.mp4 --engine qwen3-asr -m models\Qwen3-ASR-0.6B
 # 期望看到 2.x.x+cu126 与 True
 ```
 
-重装脚本可以直接带参数：`scripts\setup_qwen.ps1 -Torch cu126`（没显卡用 `-Torch cpu`）。
+重装脚本可以直接带参数：`scripts\setup_qwen.ps1 -Torch cu128`（没显卡用 `-Torch cpu`）。
+`cu126` 还是 `cu128` 取决于显卡算力，**不是越新越好**，见 7.8。
 
 > 顺带一句期望值管理：Qwen3-ASR-1.7B 在 **CPU 上只有 0.5× 实时**（12 秒音频要跑 23.9 秒），
 > 就算 torch 装对了，没显卡也不建议走 Qwen 路线 —— 用 `--engine faster-whisper` 更快。
@@ -498,3 +499,55 @@ Qwen3-ASR 只做原语言转写，不做翻译。需要英文翻译请用默认�
 * 音频越长越无所谓（73 秒素材推理只要 5.8 秒，加载占了大头）；
 * 批量转写用**一次调用传多个文件**，比逐个起进程省事（但 Qwen 引擎目前仍会按文件各起一次子进程）；
 * 短音频试参数时先加 `--duration 120` 跑片段。
+
+### 7.8 报错 `CUDA error: no kernel image is available for execution on the device`
+
+看着像环境没装好，其实是 **torch 的 wheel 里没有你这张显卡的 kernel**。
+
+先分清一件事：**`torch.cuda.is_available()` 返回 `True` 不代表能用**。
+它只说明驱动能看见显卡；这个 wheel 有没有为你的显卡架构编译算子，要真跑一次才知道。
+"自检打印 True 就以为好了" 是最常见的踩坑方式。
+
+典型场景是 **Blackwell 显卡（RTX 50 系、RTX PRO 6000、B 系列）**：算力 12.0，
+而它的 kernel 只在 **cu128 及以上**的 wheel 里有。cu126 装上后 import 正常、
+`is_available()` 也是 True，一喂音频就炸。
+
+两条命令确诊：
+
+```bash
+nvidia-smi --query-gpu=name,compute_cap --format=csv
+# 记下算力：Blackwell 是 12.0，4090 是 8.9，A100 是 8.0
+
+.venv-qwen/bin/python -c "import torch; print(torch.__version__); print(torch.cuda.get_arch_list())"
+# 看这个列表里有没有对应的 sm_xxx
+```
+
+列表里**没有** `sm_120`（而算力是 12.0）就是这个原因。换 wheel：
+
+```bash
+.venv-qwen/bin/python -m pip uninstall -y torch     # pip 见到已装会直接跳过，必须先卸
+.venv-qwen/bin/python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+# 国内拉不动就换镜像：
+#   --index-url https://mirrors.aliyun.com/pytorch-wheels/cu128
+```
+
+Windows 上是同一件事，只是路径不同：
+
+```powershell
+.\.venv-qwen\Scripts\python -m pip uninstall -y torch
+.\.venv-qwen\Scripts\python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+```
+
+装完**别只看 `is_available()`，要真算一次**：
+
+```bash
+.venv-qwen/bin/python -c "import torch; a=torch.randn(8,8,device='cuda'); print((a@a).sum().item())"
+```
+
+能打印出数字就过了。**模型和 `.venv-qwen` 里其它包都不用动** ——
+这一条只跟 torch 这一个 wheel 有关。
+
+> 安装脚本现在会读 `nvidia-smi` 的 `compute_cap` 自己选 torch 索引：算力 ≥ 12 自动用 cu128；
+> 自检步骤也会真的跑一次 GPU 算子，装错 arch 立刻报错并打印 wheel 里的架构列表，
+> 不会再让你跑到转写时才炸。手工指定仍然可用：
+> `TORCH_INDEX=cu128 bash scripts/setup.sh` / `setup.ps1 -Torch cu128`。

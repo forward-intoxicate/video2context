@@ -16,8 +16,9 @@
 param(
     [ValidateSet("qwen", "whisper", "both")]
     [string]$Engine = "qwen",
-    [ValidateSet("cu126", "cu124", "cu121", "cpu", "none")]
-    [string]$Torch = "cu126",
+    # 留空 = 让 setup_qwen.ps1 按显卡算力自动挑（Blackwell 要 cu128，别的 cu126）
+    [ValidateSet("", "cu128", "cu126", "cu124", "cu121", "cpu", "none")]
+    [string]$Torch = "",
     [switch]$SkipModels,
     [switch]$Web,
     [string]$Mirror = "https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -79,7 +80,10 @@ if ($Web) {
 # ---------------------------------------------------------------- Qwen 独立环境
 if ($wantQwen) {
     Write-Host "[4/4] 部署 Qwen3-ASR 独立环境 ..." -ForegroundColor Cyan
-    $qwenArgs = @("-Torch", $Torch, "-Mirror", $Mirror)
+    # 注意：$Torch 为空时**不能**写成 @("-Torch", "", ...) ——
+    # Windows PowerShell 的 -File 传参会把空串吃掉，导致 -Torch 吞掉后面的 -Mirror。
+    $qwenArgs = @("-Mirror", $Mirror)
+    if ($Torch) { $qwenArgs = @("-Torch", $Torch) + $qwenArgs }
     if ($SkipModels) { $qwenArgs += "-SkipModels" }
     # 模型下载交给 setup_qwen.ps1（识别模型 + 强制对齐模型，两者默认都下）
     & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "setup_qwen.ps1") @qwenArgs

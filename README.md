@@ -310,6 +310,7 @@ cat output/demo_zh_math.txt
 | `页面文件太小` / `CUDA out of memory` | 内存/显存不够 → [troubleshooting 7.2](docs/troubleshooting.md#72-页面文件太小无法完成操作--cuda-out-of-memory--0xc0000005) |
 | 模型下载卡住 / 很慢 | 用自带下载器走魔搭 → [troubleshooting 3.1](docs/troubleshooting.md#31-下载卡住进度条不动) |
 | 字幕时间明显不对 | 看 JSON 里的 `asr.timestamp_source` → [troubleshooting 7.4](docs/troubleshooting.md#74-字幕时间戳不准--所有段落挤在一起) |
+| `CUDA error: no kernel image ...` | torch 的 wheel 和显卡架构不匹配（Blackwell 要 cu128）→ [troubleshooting 7.8](docs/troubleshooting.md#78-报错-cuda-error-no-kernel-image-is-available-for-execution-on-the-device) |
 | 其它 | [docs/troubleshooting.md](docs/troubleshooting.md) 全文 |
 
 ---
@@ -422,7 +423,8 @@ bash scripts/setup_qwen.sh
 > 会掉到"在整条音轨上平均分配"那一档。真要省这 1.8GB 用 `--qwen-aligner off`。
 > 只想先建环境、不下模型：加 `-SkipModels`（Windows）或 `SKIP_MODELS=1`。
 >
-> 只想换掉 torch 的 CUDA 版本：`-Torch cu124` / `-Torch cpu`；
+> 只想换掉 torch 的 CUDA 版本：`-Torch cu128` / `-Torch cpu`（不传时会按显卡算力自动选，
+> Blackwell 即 RTX 50 系 / RTX PRO 6000 会自动用 cu128）；
 > 已经有别的环境装了 `qwen-asr`：设 `V2C_QWEN_PYTHON=<解释器路径>`，不用新建。
 
 ### 国内网络加速

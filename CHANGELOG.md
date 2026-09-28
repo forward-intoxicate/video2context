@@ -4,6 +4,38 @@
 
 ## [未发布]
 
+### 修复：Blackwell 显卡（RTX 50 系 / RTX PRO 6000）装 cu126 会报 `no kernel image`
+
+真实事故：一台 RTX PRO 6000 的服务器上，`setup.sh` 装完 cu126 的 torch，
+`torch.cuda.is_available()` 是 `True`、模型也加载成功，直到真正开始识别才炸：
+
+```
+torch.AcceleratorError: CUDA error: no kernel image is available for execution on the device
+```
+
+原因是**只看驱动版本选 wheel 是不够的**：算力 12.0（Blackwell，`sm_120`）的 kernel
+只存在于 **cu128 及以上**的 wheel 里，cu126 里没有，而 `is_available()` 只检查
+"驱动看不看得见显卡"，不做任何算子，所以它骗过了自检。
+
+改动：
+
+- `scripts/setup_qwen.sh` / `setup_qwen.ps1` 新增 `detect_torch_index()`：
+  读 `nvidia-smi --query-gpu=compute_cap`，算力 ≥ 12 自动选 **cu128**，
+  其余按驱动 CUDA 版本选 cu126 / cu124 / cu121。显式传 `TORCH_INDEX=` / `-Torch` 仍然优先
+- `scripts/setup.sh` / `setup.ps1` 的 `TORCH_INDEX` 默认值由写死的 `cu126` 改为**留空**，
+  把选择权交给上面那个探测（留空时不再向下传递参数，避免 PowerShell 吃掉空串）
+- **自检从"打印 `is_available()`"升级为"真的在 GPU 上算一次矩阵乘"** ——
+  这正是原来漏掉这一步才让错误拖到转写阶段的原因；失败时直接打印
+  `torch.cuda.get_arch_list()`，让"wheel 里有哪些架构"一眼可见
+- `scripts/preflight.py` 也采集 `compute_cap` 并纳入推荐：算力 ≥ 12 时 cu128 优先；
+  若驱动连 CUDA 12.8 都不到，则升级为**致命问题**（提醒先升驱动），
+  而不是给出一个装了也跑不起来的索引；探测不到时不再瞎猜成 `cu121`，改为让安装脚本自己选
+- 新增 `docs/troubleshooting.md` 7.8 节，把"`is_available()` 为 True ≠ 能用"讲清楚，
+  并给出确诊 / 换 wheel / 验证的完整命令（含国内镜像）
+- 顺手修掉一个撞见的 bug：`scripts/preflight.py` 在中文 Windows 控制台（cp936）
+  上打印 `✓` 会抛 `UnicodeEncodeError` —— 也就是说**一切正常时反而崩**，
+  现在对输出流放宽错误处理（编不出的字符退化成 `?`），不改编码以免中文变乱码
+
 ### 新增：README 的「快速开始」改成 7 步走通全流程（每步都给 Windows / Linux 两版）
 
 原来的「快速开始」是散的（0. 你需要什么 / 1. 装环境 / 2. 转写 / 3. 网页界面 / 4. 样例试跑），

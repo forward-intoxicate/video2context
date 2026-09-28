@@ -89,7 +89,7 @@ python -m pip --python .venv/bin/python install --upgrade pip
 ### Windows（有 NVIDIA 显卡）
 
 ```powershell
-# 默认就是 qwen；-Torch cu126 对应 CUDA 12.x 驱动
+# 默认就是 qwen；torch 的 CUDA 版本会按显卡算力自动选（Blackwell → cu128，其余 → cu126）
 # 模型默认一起下（约 6GB，可断点续传，中途 Ctrl+C 下次接着下）
 powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 
@@ -106,7 +106,8 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -Torch cpu
 ### macOS / Linux
 
 ```bash
-bash scripts/setup.sh                      # 默认 qwen + cu126，模型一起下
+bash scripts/setup.sh                      # 默认 qwen，模型一起下（torch 按显卡算力自动选）
+TORCH_INDEX=cu128 bash scripts/setup.sh    # 想手工指定 Blackwell 用的 cu128
 TORCH_INDEX=cpu bash scripts/setup.sh      # macOS 一律用 cpu
 SKIP_MODELS=1 bash scripts/setup.sh        # 只建环境，不下模型
 ```
@@ -392,7 +393,7 @@ video2context 部署前体检（只看不装）
   Python       : 3.10.12 (/root/miniconda3/bin/python)
   CPU          : 32 核
   内存         : 总 60GB / 可用 55GB
-  GPU          : NVIDIA GeForce RTX 4090  显存共 24GB
+  GPU          : NVIDIA GeForce RTX 4090  显存共 24GB  算力 8.9
   CUDA         : 驱动上限 12.2 → 推荐 torch 索引 cu121
 
   磁盘：
@@ -483,21 +484,25 @@ python3 -m pip --python .venv/bin/python install --upgrade pip
 ### 9.5 选对 torch 的 CUDA 版本
 
 PyPI 上的 `pip install torch` 给的是 **CPU 版**，必须走 PyTorch 官方索引。
-选哪个由**驱动支持的 CUDA 版本**决定（`nvidia-smi` 抬头里的 `CUDA Version:`）：
+选哪个由**显卡算力**和**驱动支持的 CUDA 版本**共同决定：
 
 ```bash
-nvidia-smi | head -3      # 看 "CUDA Version: 12.2" 这种
+nvidia-smi --query-gpu=name,compute_cap --format=csv   # 算力，如 8.9 / 12.0
+nvidia-smi | head -3                                   # 驱动的 "CUDA Version: 12.2"
 ```
 
-| nvidia-smi 显示 | 用哪个 |
+| 情况 | 用哪个 |
 |---|---|
-| 12.6 及以上 | `TORCH_INDEX=cu126`（默认） |
-| 12.4 ～ 12.5 | `TORCH_INDEX=cu124` |
-| 12.1 ～ 12.3 | `TORCH_INDEX=cu121` |
+| 算力 **12.0**（Blackwell：RTX 50 系 / RTX PRO 6000 / B 系列） | `TORCH_INDEX=cu128` —— **只有 cu128+ 的 wheel 里有 sm_120 的 kernel**，cu126 装上去能 import、`is_available()` 也是 True，一跑算子就报 `no kernel image` |
+| 算力 ≤ 9.0，驱动 12.6 及以上 | `TORCH_INDEX=cu126` |
+| 算力 ≤ 9.0，驱动 12.4 ～ 12.5 | `TORCH_INDEX=cu124` |
+| 算力 ≤ 9.0，驱动 12.1 ～ 12.3 | `TORCH_INDEX=cu121` |
 | 12.0 及以下 / 没有显卡 | `TORCH_INDEX=cpu`（Qwen 会非常慢，建议改走 Whisper 路线） |
 
 CUDA **向后兼容**：驱动支持 12.6 也能跑 cu121 的 wheel，反过来不行 ——
-所以拿不准就**选低一档**。`scripts/preflight.py` 会直接把这个值算好。
+所以拿不准就**选低一档**。`scripts/preflight.py` 会直接把这个值算好；
+**不传 `TORCH_INDEX` 时安装脚本会自己读 `compute_cap` 选**，一般不用管。
+装错 arch 的症状和排查见 [troubleshooting.md 7.8](troubleshooting.md#78-报错-cuda-error-no-kernel-image-is-available-for-execution-on-the-device)。
 
 ### 9.6 在服务器上长时间跑
 
@@ -658,6 +663,7 @@ python -m video2context doctor
 | `页面文件太小` / `CUDA out of memory` | [troubleshooting 7.2](troubleshooting.md#72-页面文件太小无法完成操作--cuda-out-of-memory--0xc0000005) |
 | Qwen 跑得很慢 / 自检显示 `cuda False` | [troubleshooting 7.3](troubleshooting.md#73-环境自检显示-设备cpu--速度特别慢)（多半是 torch 装成了 CPU 版） |
 | 字幕时间戳不准 | [troubleshooting 7.4](troubleshooting.md#74-字幕时间戳不准--所有段落挤在一起) |
+| `CUDA error: no kernel image ...` | torch 与显卡架构不匹配 → [troubleshooting 7.8](troubleshooting.md#78-报错-cuda-error-no-kernel-image-is-available-for-execution-on-the-device) |
 | 模型下载卡住 / 很慢 | [troubleshooting 3.1](troubleshooting.md#31-下载卡住进度条不动) |
 | 网页界面打不开 | [troubleshooting 6.3](troubleshooting.md#63-网页界面打不开--端口被占用) |
 | 其它（安装、ffmpeg、显卡、识别质量） | [troubleshooting.md](troubleshooting.md) 全文 |

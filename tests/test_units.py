@@ -341,15 +341,42 @@ class PreflightTest(unittest.TestCase):
 
     def test_picks_newest_supported_index(self) -> None:
         recommend = self._preflight()._recommend_torch_index
-        # CUDA 向后兼容：驱动支持 12.6 就能跑 cu126，只支持 12.4 则最高到 cu124
+        # CUDA 向后兼容：驱动支持 12.8 就能跑 cu128，只支持 12.4 则最高到 cu124
+        self.assertEqual(recommend("12.8"), "cu128")
         self.assertEqual(recommend("12.6"), "cu126")
         self.assertEqual(recommend("12.4"), "cu124")
         self.assertEqual(recommend("12.3"), "cu121")
         self.assertEqual(recommend("12.2"), "cu121")
 
     def test_newer_driver_still_uses_newest_wheel(self) -> None:
-        # cu126 是列表里最新的，驱动更新时仍然推荐它
-        self.assertEqual(self._preflight()._recommend_torch_index("13.0"), "cu126")
+        # cu128 是列表里最新的，驱动更新时仍然推荐它
+        self.assertEqual(self._preflight()._recommend_torch_index("13.0"), "cu128")
+
+    def test_blackwell_needs_cu128_even_on_old_driver(self) -> None:
+        """算力 12.0（RTX 50 系 / RTX PRO 6000）只有 cu128+ 的 wheel 里有它的 kernel。
+
+        只看驱动版本会选成 cu126，装上以后 torch.cuda.is_available() 还是 True，
+        要等到真跑算子才炸 ``no kernel image`` —— 这条测试就是钉住这个坑。
+        """
+        recommend = self._preflight()._recommend_torch_index
+        self.assertEqual(recommend("13.2", 12.0), "cu128")
+        self.assertEqual(recommend("12.8", 12.0), "cu128")
+        # 驱动连 12.8 都不到 → 选不出来，由 evaluate() 报出来让用户升级驱动
+        self.assertIsNone(recommend("12.6", 12.0))
+
+    def test_non_blackwell_ignores_compute_cap(self) -> None:
+        recommend = self._preflight()._recommend_torch_index
+        self.assertEqual(recommend("12.6", 8.9), "cu126")
+        self.assertEqual(recommend("12.4", 8.6), "cu124")
+
+    def test_blackwell_with_old_driver_is_a_problem(self) -> None:
+        module = self._preflight()
+        problems, _ = module.evaluate(
+            self._report(gpu_names=["NVIDIA RTX PRO 6000 Blackwell"], gpu_compute_cap=12.0,
+                         cuda_version="12.6", recommended_torch=None),
+            "qwen",
+        )
+        self.assertTrue(any("Blackwell" in item for item in problems), problems)
 
     def test_too_old_or_unknown_returns_none(self) -> None:
         recommend = self._preflight()._recommend_torch_index

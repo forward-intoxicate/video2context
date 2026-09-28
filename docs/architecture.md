@@ -204,7 +204,7 @@ Whisper 引擎走 CTranslate2/ONNX 路线，两者塞进同一个环境会互相
 
 ```
 主环境 .venv                          独立环境 .venv-qwen
-├─ imageio-ffmpeg（公共依赖）          ├─ torch（按显卡选 cu126 / cpu）
+├─ imageio-ffmpeg（公共依赖）          ├─ torch（按算力选 cu128 / cu126 / cpu）
 ├─ faster-whisper（可选的另一个引擎）   ├─ transformers==4.57.6
 ├─ gradio（可选）                      └─ qwen-asr==0.0.6
 └─ qwen_engine.py ──subprocess──────▶ _qwen_worker.py ──▶ result.json

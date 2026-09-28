@@ -32,7 +32,9 @@ case "$engine" in
     *) echo "参数错误：引擎只能是 qwen / whisper / both，收到 '$engine'" >&2; exit 2 ;;
 esac
 
-torch_index="${TORCH_INDEX:-cu126}"
+# 留空 = 让 setup_qwen.sh 自己按显卡算力挑（Blackwell 要 cu128，别的 cu126）。
+# 用户显式给了 TORCH_INDEX 就尊重用户的选择。
+torch_index="${TORCH_INDEX:-}"
 mirror="${PIP_MIRROR:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 skip_models="${SKIP_MODELS:-0}"
 # 模型根目录：默认工程内的 models/，可用 V2C_MODELS_DIR 指到别处（代码与权重分开放）

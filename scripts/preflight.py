@@ -34,6 +34,22 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+
+def _make_output_crashproof() -> None:
+    """让 ``✓`` / ``✗`` 在 GBK 控制台上不至于把整个脚本干掉。
+
+    中文 Windows 的控制台默认是 cp936，里面没有 ``✓``(U+2713) 这几个字符，
+    ``print`` 会抛 ``UnicodeEncodeError`` —— 也就是说"一切正常"时反而崩。
+    这里只放宽错误处理（编不出来的字符退化成 ``?``），**不改编码**，
+    免得本来能正常显示的中文反而变成乱码。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(AttributeError, OSError, ValueError):
+            stream.reconfigure(errors="replace")
+
+
+_make_output_crashproof()
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 #: 各条路线大致的磁盘占用（GB）：环境 + 模型 + 中间文件余量
@@ -46,8 +62,16 @@ QWEN_VRAM_GB = 5
 #: faster-whisper large-v3 的显存需求（GB），int8 时可以低到 2
 WHISPER_VRAM_GB = 5
 
-#: PyTorch 官方索引里我们支持的几个（从新到旧）
-TORCH_INDEXES = ("cu126", "cu124", "cu121")
+#: PyTorch 官方索引里我们支持的几个（**从新到旧**，取第一个满足条件的）
+TORCH_INDEXES = ("cu128", "cu126", "cu124", "cu121")
+
+#: Blackwell（RTX 50 系 / RTX PRO 6000 / B 系列）的算力是 12.0，
+#: 它的 kernel 只在 cu128 及以上的 wheel 里 —— cu126 装了能 import、
+#: ``torch.cuda.is_available()`` 也是 True，但一跑算子就报
+#: ``CUDA error: no kernel image is available for execution on the device``。
+#: 详见 docs/troubleshooting.md「no kernel image」。
+BLACKWELL_COMPUTE_CAP = 12.0
+BLACKWELL_TORCH_INDEX = "cu128"
 
 
 @dataclass
@@ -63,6 +87,8 @@ class Report:
     memory_available_gb: float = 0.0
     gpu_names: list[str] = field(default_factory=list)
     gpu_vram_gb: float = 0.0
+    #: 显卡算力（compute capability），如 8.9 / 12.0；读不到就是 None
+    gpu_compute_cap: Optional[float] = None
     cuda_version: Optional[str] = None
     recommended_torch: Optional[str] = None
     disks: list[dict[str, Any]] = field(default_factory=list)
@@ -132,10 +158,14 @@ def _memory_gb() -> tuple[float, float]:
         return 0.0, 0.0
 
 
-def _gpu_info() -> tuple[list[str], float, Optional[str]]:
-    """用 nvidia-smi 取 (显卡名列表, 总显存GB, 驱动支持的 CUDA 版本)。"""
+def _gpu_info() -> tuple[list[str], float, Optional[str], Optional[float]]:
+    """用 nvidia-smi 取 (显卡名列表, 总显存GB, 驱动支持的 CUDA 版本, 显卡算力)。
+
+    算力单独查一次：``compute_cap`` 这个字段老驱动不一定支持，
+    混在第一条查询里会让整条查询失败、连卡名都拿不到。
+    """
     if not shutil.which("nvidia-smi"):
-        return [], 0.0, None
+        return [], 0.0, None, None
 
     names: list[str] = []
     vram = 0.0
@@ -149,6 +179,14 @@ def _gpu_info() -> tuple[list[str], float, Optional[str]]:
             with contextlib.suppress(ValueError):
                 vram += float(parts[1]) / 1024  # MiB → GB
 
+    # 算力：形如 "8.9" / "12.0"，多卡取第一张（同一台机器上一般一致）
+    cc: Optional[float] = None
+    cc_out = _run(["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader,nounits"])
+    for line in cc_out.splitlines():
+        with contextlib.suppress(ValueError):
+            cc = float(line.strip())
+            break
+
     # nvidia-smi 抬头里的 "CUDA Version: 12.2" 才是驱动支持的版本
     header = _run(["nvidia-smi"])
     cuda = None
@@ -157,14 +195,16 @@ def _gpu_info() -> tuple[list[str], float, Optional[str]]:
             tail = line.split("CUDA Version", 1)[1]
             cuda = tail.strip().lstrip(":").strip().split()[0].strip()
             break
-    return names, vram, cuda
+    return names, vram, cuda, cc
 
 
-def _recommend_torch_index(cuda: Optional[str]) -> Optional[str]:
-    """按驱动支持的 CUDA 版本，挑一个 PyTorch 官方索引。
+def _recommend_torch_index(cuda: Optional[str], compute_cap: Optional[float] = None) -> Optional[str]:
+    """按驱动支持的 CUDA 版本（和显卡算力），挑一个 PyTorch 官方索引。
 
     CUDA 向后兼容：驱动支持 12.4 就能跑 cu121 的 wheel，反之不行。
-    所以取"不高于驱动上限"里最新的那个。
+    所以取"不高于驱动上限"里最新的那个 —— **但 Blackwell 例外**：
+    算力 12.0 的卡只有 cu128+ 的 wheel 里才有它的 kernel，光看驱动版本会选错，
+    装上以后要等到真正跑算子才炸（``no kernel image``）。
     """
     if not cuda:
         return None
@@ -172,11 +212,21 @@ def _recommend_torch_index(cuda: Optional[str]) -> Optional[str]:
         supported = tuple(int(x) for x in cuda.split(".")[:2])
     except ValueError:
         return None
+    if compute_cap is not None and compute_cap >= BLACKWELL_COMPUTE_CAP:
+        floor = _index_version(BLACKWELL_TORCH_INDEX)
+    else:
+        floor = (0, 0)
     for index in TORCH_INDEXES:
-        need = (int(index[2:4]), int(index[4:6]))
-        if supported >= need:
+        need = _index_version(index)
+        if need >= floor and supported >= need:
             return index
     return None
+
+
+def _index_version(index: str) -> tuple[int, int]:
+    """``"cu128"`` → ``(12, 8)``。"""
+    return (int(index[2:4]), int(index[4:6]))
+
 
 
 def _disk_of(path: Path) -> Optional[dict[str, Any]]:
@@ -209,8 +259,8 @@ def collect() -> Report:
     # 容器里 os.cpu_count() 可能返回 None（文档允许），别让它把后续算炸
     report.cpu_count = os.cpu_count() or 0
     report.memory_total_gb, report.memory_available_gb = _memory_gb()
-    report.gpu_names, report.gpu_vram_gb, report.cuda_version = _gpu_info()
-    report.recommended_torch = _recommend_torch_index(report.cuda_version)
+    report.gpu_names, report.gpu_vram_gb, report.cuda_version, report.gpu_compute_cap = _gpu_info()
+    report.recommended_torch = _recommend_torch_index(report.cuda_version, report.gpu_compute_cap)
     report.has_git = bool(shutil.which("git"))
     report.project_dir = str(PROJECT_ROOT)
 
@@ -229,7 +279,10 @@ def collect() -> Report:
     report.home_free_gb = home_disk["free_gb"] if home_disk else 0.0
 
     if report.gpu_names:
-        report.notes.append(f"GPU 显存 {report.gpu_vram_gb:.0f}GB，CUDA 驱动上限 {report.cuda_version or '未知'}")
+        cap = f"，算力 {report.gpu_compute_cap:.1f}" if report.gpu_compute_cap else ""
+        report.notes.append(
+            f"GPU 显存 {report.gpu_vram_gb:.0f}GB{cap}，CUDA 驱动上限 {report.cuda_version or '未知'}"
+        )
     else:
         report.notes.append("没检测到 NVIDIA 显卡 → 走 Whisper 路线（CPU 也能跑）；Qwen 在 CPU 上比实时还慢")
 
@@ -267,7 +320,14 @@ def evaluate(report: Report, engine: str) -> tuple[list[str], list[str]]:
         elif report.gpu_vram_gb < QWEN_VRAM_GB:
             problems.append(f"显存只有 {report.gpu_vram_gb:.0f}GB，Qwen3-ASR-1.7B 大约要 {QWEN_VRAM_GB}GB")
         if report.recommended_torch is None and report.gpu_names:
-            warnings.append("没识别出驱动支持的 CUDA 版本，安装时请手动指定 -Torch / TORCH_INDEX")
+            if report.gpu_compute_cap and report.gpu_compute_cap >= BLACKWELL_COMPUTE_CAP:
+                problems.append(
+                    f"显卡算力 {report.gpu_compute_cap:.1f}（Blackwell）需要 {BLACKWELL_TORCH_INDEX} 的 torch，"
+                    f"但驱动只报到 CUDA {report.cuda_version} —— 请先把 NVIDIA 驱动升级到 570 以上，"
+                    f"否则装上 torch 也会报 no kernel image"
+                )
+            else:
+                warnings.append("没识别出驱动支持的 CUDA 版本，安装时请手动指定 -Torch / TORCH_INDEX")
 
     if report.memory_total_gb and report.memory_total_gb < COMMIT_MEMORY_GB:
         if engine in {"qwen", "both"}:
@@ -307,7 +367,8 @@ def print_report(report: Report, engine: str, problems: list[str], warnings: lis
         row("内存", "读不到（不影响安装）")
 
     if report.gpu_names:
-        row("GPU", f"{'、'.join(report.gpu_names)}  显存共 {report.gpu_vram_gb:.0f}GB")
+        cap = f"  算力 {report.gpu_compute_cap:.1f}" if report.gpu_compute_cap else ""
+        row("GPU", f"{'、'.join(report.gpu_names)}  显存共 {report.gpu_vram_gb:.0f}GB{cap}")
         row("CUDA", f"驱动上限 {report.cuda_version or '未知'} → 推荐 torch 索引 {report.recommended_torch or '（需手动指定）'}")
     else:
         row("GPU", "未检测到 NVIDIA 显卡")
@@ -365,10 +426,11 @@ def _cache_root(report: Report) -> str:
 def suggested_commands(report: Report, engine: str) -> list[str]:
     """给出这台机器上可以直接照抄的安装命令（**Linux / macOS 的 bash 写法**）。
 
-    注意别把 Windows 那套参数混进来：``-Torch cu126`` 是 setup.ps1 的 PowerShell 参数，
-    bash 版走的是环境变量 ``TORCH_INDEX``。
+    注意别把 Windows 那套参数混进来：``-Torch cu128`` 是 setup.ps1 的 PowerShell 参数，
+    bash 版走的是环境变量 ``TORCH_INDEX``。探测不到时**不写死** ——
+    安装脚本自己会按显卡算力挑，比我们瞎猜准。
     """
-    torch = report.recommended_torch or "cu121"
+    torch = report.recommended_torch
     cache = _cache_root(report)
     lines: list[str] = []
 
@@ -401,10 +463,19 @@ def suggested_commands(report: Report, engine: str) -> list[str]:
         ]
     else:
         suffix = " both" if engine == "both" else ""
+        if torch:
+            hint = f"；torch 用 {torch}"
+            if report.cuda_version:
+                hint += f"（驱动支持 {report.cuda_version}）"
+            if report.gpu_compute_cap and report.gpu_compute_cap >= BLACKWELL_COMPUTE_CAP:
+                hint += "，Blackwell 只能吃 cu128+"
+            setup_cmd = f"TORCH_INDEX={torch} bash scripts/setup.sh{suffix}"
+        else:
+            hint = "；torch 版本由安装脚本按显卡算力自动选"
+            setup_cmd = f"bash scripts/setup.sh{suffix}"
         lines += [
-            f"# 3) 一键装（约 9GB：环境 3GB + 模型 6GB）；torch 用 {torch}"
-            + (f"，驱动支持 {report.cuda_version} 向下兼容" if report.cuda_version else ""),
-            f"TORCH_INDEX={torch} bash scripts/setup.sh{suffix}",
+            f"# 3) 一键装（约 9GB：环境 3GB + 模型 6GB）{hint}",
+            setup_cmd,
         ]
 
     lines += [

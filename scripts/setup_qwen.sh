@@ -24,8 +24,36 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 echo "工程目录：$ROOT"
 
-# TORCH_INDEX 用 PyTorch 官方索引的目录名：cu126 / cu124 / cu121 / cpu
-TORCH_INDEX="${TORCH_INDEX:-cu126}"
+# 显卡算力 → 该用哪个 torch 索引。
+#
+# 为什么不能写死：Blackwell（RTX 50 系 / RTX PRO 6000 / B 系列）算力是 12.0，
+# 它的 kernel **只在 cu128 及以上的 wheel 里**。cu126 装上去能 import、
+# torch.cuda.is_available() 也返回 True，但一跑算子就炸：
+#   CUDA error: no kernel image is available for execution on the device
+# 所以这里读一次 nvidia-smi 的 compute_cap 来自动选，读不到才退回 cu126。
+detect_torch_index() {
+    local cc="" cuda="" major=""
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        # 注意 `|| true`：老版 nvidia-smi 不认 compute_cap 字段会返回非零，
+        # 在 set -e + pipefail 下会把整个脚本带崩，所以让管道的左侧永远成功。
+        cc="$( { nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null || true; } | head -n1 | tr -d '[:space:]')"
+        cuda="$( { nvidia-smi 2>/dev/null || true; } | sed -n 's/.*CUDA Version: *\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n1)"
+    fi
+    major="${cc%%.*}"
+    if [ -n "$major" ] && [ "$major" -ge 12 ] 2>/dev/null; then
+        echo "cu128"
+        return
+    fi
+    case "$cuda" in
+        12.6|12.7|12.8|12.9|13.*) echo "cu126" ;;
+        12.4|12.5) echo "cu124" ;;
+        12.[0-3]) echo "cu121" ;;
+        *) echo "cu126" ;;
+    esac
+}
+
+# TORCH_INDEX 用 PyTorch 官方索引的目录名：cu128 / cu126 / cu124 / cu121 / cpu / none
+TORCH_INDEX="${TORCH_INDEX:-$(detect_torch_index)}"
 # torch 的下载源。国内直连 download.pytorch.org 拉 869MB 很容易断流，
 # 而 pip **不支持断点续传**，断了就得从 0 重来 —— 所以可以换成国内镜像：
 #   TORCH_BASE_URL=https://mirrors.aliyun.com/pytorch-wheels TORCH_INDEX=cu126 bash scripts/setup.sh
@@ -86,6 +114,19 @@ echo "[4/5] 安装 qwen-asr 及其依赖 ..."
 
 echo "[5/5] 环境自检 ..."
 "$PY" -c "import torch, transformers, qwen_asr; print('  torch', torch.__version__, '| cuda', torch.cuda.is_available(), '| transformers', transformers.__version__)"
+# 只打印 is_available 是不够的：装错 arch 时它照样是 True，要真算一次才暴露。
+# 这一步就是冲着 "no kernel image is available for execution on the device" 来的。
+if "$PY" -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)"; then
+    if ! "$PY" -c "import torch; a=torch.randn(8,8,device='cuda'); print('  GPU 实测通过：', round((a@a).sum().item(),3))"; then
+        echo ""
+        echo "  ✗ GPU 能识别但算不了 —— 几乎肯定是 torch 的 CUDA 版本和显卡架构不匹配。"
+        echo "    你这张卡的算力是 $(nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null | head -n1 | tr -d '[:space:]')，"
+        echo "    当前 torch 编译进去的架构是："
+        "$PY" -c "import torch; print('   ', torch.cuda.get_arch_list())" || true
+        echo "    按 docs/troubleshooting.md「no kernel image」一节换 wheel，然后重跑本脚本。"
+        exit 1
+    fi
+fi
 "$MAIN_PY" -m video2context --engine qwen3-asr --qwen-setup
 
 if [ "${SKIP_MODELS:-0}" = "1" ]; then
