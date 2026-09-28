@@ -73,7 +73,8 @@ if ($Torch -eq "none") {
     } else {
         # 注意：直接 pip install torch 在 PyPI 上拿到的是 +cpu 构建（没有 CUDA），
         # 必须用 PyTorch 官方索引才能装上带 CUDA 的 wheel。
-        & $py -m pip install torch --index-url "https://download.pytorch.org/whl/$Torch"
+        $torchBase = if ($env:TORCH_BASE_URL) { $env:TORCH_BASE_URL } else { "https://download.pytorch.org/whl" }
+        & $py -m pip install torch --index-url "$torchBase/$Torch"
     }
 }
 

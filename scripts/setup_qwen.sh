@@ -26,6 +26,10 @@ echo "工程目录：$ROOT"
 
 # TORCH_INDEX 用 PyTorch 官方索引的目录名：cu126 / cu124 / cu121 / cpu
 TORCH_INDEX="${TORCH_INDEX:-cu126}"
+# torch 的下载源。国内直连 download.pytorch.org 拉 869MB 很容易断流，
+# 而 pip **不支持断点续传**，断了就得从 0 重来 —— 所以可以换成国内镜像：
+#   TORCH_BASE_URL=https://mirrors.aliyun.com/pytorch-wheels TORCH_INDEX=cu126 bash scripts/setup.sh
+TORCH_BASE_URL="${TORCH_BASE_URL:-https://download.pytorch.org/whl}"
 MIRROR="${PIP_MIRROR:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 # 模型根目录：默认工程内的 models/，可用 V2C_MODELS_DIR 指到别处（代码与权重分开放）
 MODELS_DIR="${V2C_MODELS_DIR:-$ROOT/models}"
@@ -74,7 +78,7 @@ else
     echo "[3/5] 安装 torch（$TORCH_INDEX，约 2.5GB，耐心等）..."
     # 直接 pip install torch 在 PyPI 上默认拿到的是 +cpu 构建，
     # 要 CUDA 版必须走 PyTorch 官方索引。
-    "$PY" -m pip install torch --index-url "https://download.pytorch.org/whl/$TORCH_INDEX"
+    "$PY" -m pip install torch --index-url "$TORCH_BASE_URL/$TORCH_INDEX"
 fi
 
 echo "[4/5] 安装 qwen-asr 及其依赖 ..."
