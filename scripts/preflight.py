@@ -197,6 +197,7 @@ def collect() -> Report:
     report.machine = platform.machine()
     report.python = f"{sys.version.split()[0]} ({sys.executable})"
     report.python_ok = sys.version_info >= (3, 9)
+    # 容器里 os.cpu_count() 可能返回 None（文档允许），别让它把后续算炸
     report.cpu_count = os.cpu_count() or 0
     report.memory_total_gb, report.memory_available_gb = _memory_gb()
     report.gpu_names, report.gpu_vram_gb, report.cuda_version = _gpu_info()
@@ -291,7 +292,7 @@ def print_report(report: Report, engine: str, problems: list[str], warnings: lis
     print("video2context 部署前体检（只看不装）\n")
     row("系统", f"{report.system}  {report.machine}")
     row("Python", report.python)
-    row("CPU", f"{report.cpu_count} 核")
+    row("CPU", f"{report.cpu_count} 核" if report.cpu_count else "读不到（不影响安装）")
     if report.memory_total_gb:
         row("内存", f"总 {report.memory_total_gb:.0f}GB / 可用 {report.memory_available_gb:.0f}GB")
     else:

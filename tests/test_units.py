@@ -297,7 +297,11 @@ class DoctorInterpreterWarningTest(unittest.TestCase):
 
 
 class PreflightTest(unittest.TestCase):
-    """部署前体检：CUDA → torch 索引的推荐逻辑（服务器上最容易选错的一步）。"""
+    """部署前体检：CUDA → torch 索引的推荐逻辑（服务器上最容易选错的一步）。
+
+    判断类用例一律用**构造出来的 Report**，不读真实机器 ——
+    测试不该因为"跑在哪台机器上"而变红（CI 的容器里 os.cpu_count() 就可能是 None）。
+    """
 
     @staticmethod
     def _preflight():
@@ -309,6 +313,27 @@ class PreflightTest(unittest.TestCase):
         import preflight
 
         return preflight
+
+    def _report(self, **overrides):
+        module = self._preflight()
+        base = {
+            "python_ok": True,
+            "has_git": True,
+            "cpu_count": 8,
+            "memory_total_gb": 64.0,
+            "memory_available_gb": 60.0,
+            "gpu_names": ["NVIDIA GeForce RTX 4090"],
+            "gpu_vram_gb": 24.0,
+            "cuda_version": "12.2",
+            "recommended_torch": "cu121",
+            "project_dir": "/root/video2context",
+            "project_free_gb": 200.0,
+            "home_free_gb": 200.0,
+        }
+        base.update(overrides)
+        return module.Report(**base)
+
+    # ------------------------------------------------------- CUDA → torch
 
     def test_picks_newest_supported_index(self) -> None:
         recommend = self._preflight()._recommend_torch_index
@@ -327,20 +352,76 @@ class PreflightTest(unittest.TestCase):
         for value in ("11.8", "12.0", None, "不是版本号"):
             self.assertIsNone(recommend(value))
 
+    # ------------------------------------------------------------- 建议命令
+
     def test_suggested_commands_are_bash_syntax(self) -> None:
         """建议命令是给 Linux 服务器用的，不能混进 PowerShell 的 -Torch 参数。"""
         module = self._preflight()
-        report = module.collect()
-        text = "\n".join(module.suggested_commands(report, "qwen"))
-        self.assertIn("TORCH_INDEX=", text)
+        text = "\n".join(module.suggested_commands(self._report(), "qwen"))
+        self.assertIn("TORCH_INDEX=cu121", text)
         self.assertNotIn("-Torch ", text)
         self.assertIn("HF_HOME", text)
 
-    def test_collect_runs_on_this_machine(self) -> None:
+    def test_disk_shortage_suggests_moving_to_data_disk(self) -> None:
         module = self._preflight()
-        report = module.collect()
+        text = "\n".join(module.suggested_commands(self._report(project_free_gb=5.0), "qwen"))
+        self.assertIn("autodl-tmp", text)
+
+    def test_whisper_route_has_no_torch_step(self) -> None:
+        module = self._preflight()
+        text = "\n".join(module.suggested_commands(self._report(), "whisper"))
+        self.assertIn("setup.sh whisper", text)
+        self.assertNotIn("TORCH_INDEX=", text)
+
+    # ------------------------------------------------------------- 结论判定
+
+    def test_no_gpu_is_only_a_warning(self) -> None:
+        module = self._preflight()
+        problems, warnings = module.evaluate(self._report(gpu_names=[], gpu_vram_gb=0.0), "qwen")
+        self.assertEqual(problems, [])
+        self.assertTrue(any("没检测到 NVIDIA 显卡" in w for w in warnings))
+
+    def test_small_vram_is_a_problem_for_qwen(self) -> None:
+        module = self._preflight()
+        problems, _ = module.evaluate(self._report(gpu_vram_gb=4.0), "qwen")
+        self.assertTrue(any("显存只有" in p for p in problems))
+
+    def test_small_memory_blocks_qwen_but_only_warns_for_whisper(self) -> None:
+        module = self._preflight()
+        qwen_problems, _ = module.evaluate(self._report(memory_total_gb=8.0), "qwen")
+        self.assertTrue(any("内存只有" in p for p in qwen_problems))
+
+        whisper_problems, whisper_warnings = module.evaluate(self._report(memory_total_gb=8.0), "whisper")
+        self.assertEqual(whisper_problems, [])
+        self.assertTrue(any("内存" in w for w in whisper_warnings))
+
+    def test_small_disk_is_a_problem(self) -> None:
+        module = self._preflight()
+        problems, _ = module.evaluate(self._report(project_free_gb=3.0), "qwen")
+        self.assertTrue(any("工程所在磁盘只剩" in p for p in problems))
+
+    # ----------------------------------------------------------- 真实机器冒烟
+
+    def test_collect_is_robust_on_any_machine(self) -> None:
+        """collect() 只要求"不崩、字段类型对" —— 不能假设机器的具体情况。"""
+        module = self._preflight()
+        try:
+            report = module.collect()
+        except Exception:
+            # 万一某个平台上探测崩了，把 traceback 塞进注解（CI 日志没权限时也能看到原因）
+            import base64
+            import traceback
+
+            blob = base64.b64encode(traceback.format_exc().encode("utf-8")).decode("ascii")[:3000]
+            print(f"::warning title=preflight-collect-failed::{blob}")
+            raise
+
+        self.assertIsInstance(report, module.Report)
         self.assertTrue(report.project_dir)
-        self.assertGreater(report.cpu_count, 0)
+        self.assertIsInstance(report.cpu_count, int)
+        self.assertGreaterEqual(report.cpu_count, 0)
+        self.assertIsInstance(report.disks, list)
+        # 结论接口在任意机器上都该给得出两个列表
         problems, warnings = module.evaluate(report, "whisper")
         self.assertIsInstance(problems, list)
         self.assertIsInstance(warnings, list)
