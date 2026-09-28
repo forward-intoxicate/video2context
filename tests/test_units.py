@@ -329,6 +329,10 @@ class PreflightTest(unittest.TestCase):
             "project_dir": "/root/video2context",
             "project_free_gb": 200.0,
             "home_free_gb": 200.0,
+            "disks": [
+                {"path": "/root/video2context", "total_gb": 500.0, "free_gb": 200.0},
+                {"path": "/root", "total_gb": 30.0, "free_gb": 20.0},
+            ],
         }
         base.update(overrides)
         return module.Report(**base)
@@ -364,8 +368,39 @@ class PreflightTest(unittest.TestCase):
 
     def test_disk_shortage_suggests_moving_to_data_disk(self) -> None:
         module = self._preflight()
-        text = "\n".join(module.suggested_commands(self._report(project_free_gb=5.0), "qwen"))
-        self.assertIn("autodl-tmp", text)
+        report = self._report(
+            project_free_gb=5.0,
+            disks=[
+                {"path": "/root/video2context", "total_gb": 30.0, "free_gb": 5.0},
+                {"path": "/data", "total_gb": 500.0, "free_gb": 480.0},
+            ],
+        )
+        text = "\n".join(module.suggested_commands(report, "qwen"))
+        self.assertIn("mkdir -p /data", text)
+        self.assertIn("HF_HOME=/data/hf-cache", text)
+
+    def test_cache_dir_is_never_inside_the_repo(self) -> None:
+        """缓存目录必须挑在工程外面 —— 否则会往仓库里塞几个 GB。"""
+        module = self._preflight()
+        project = "/root/autodl-tmp/video2context"
+        report = self._report(
+            project_dir=project,
+            disks=[
+                # 工程所在盘可用空间最多，但它自己不能当缓存目录
+                {"path": project, "total_gb": 180.0, "free_gb": 31.9},
+                {"path": "/root", "total_gb": 30.0, "free_gb": 24.4},
+            ],
+        )
+        text = "\n".join(module.suggested_commands(report, "qwen"))
+        self.assertIn("HF_HOME=/root/autodl-tmp/hf-cache", text)
+        self.assertNotIn(f"HF_HOME={project}", text)
+
+    def test_caches_are_persisted_not_just_exported(self) -> None:
+        """HF_HOME 只 export 一次的话，新开的 SSH 会话又丢 —— 必须写进 .bashrc。"""
+        module = self._preflight()
+        text = "\n".join(module.suggested_commands(self._report(), "qwen"))
+        self.assertIn("PIP_CACHE_DIR", text)
+        self.assertIn(">> ~/.bashrc", text)
 
     def test_whisper_route_has_no_torch_step(self) -> None:
         module = self._preflight()

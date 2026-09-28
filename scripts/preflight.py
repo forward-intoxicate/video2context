@@ -333,6 +333,35 @@ def print_report(report: Report, engine: str, problems: list[str], warnings: lis
         print(f"    {line}")
 
 
+def _parent_of(path: str) -> str:
+    """取上级目录。
+
+    磁盘列表里混着两种路径：``str(PROJECT_ROOT)``（本机风格）和 ``/root``、``/mnt``
+    这类写死的 POSIX 路径。在 Windows 上跑体检时，用 ``Path("/root/x").parent``
+    会得到 ``\\root``，拼出来的建议命令就是错的 —— 所以要按路径本身的风格来切。
+    """
+    if "/" in path and "\\" not in path:
+        import posixpath
+
+        return posixpath.dirname(path) or "/"
+    return os.path.dirname(path) or path
+
+
+def _cache_root(report: Report) -> str:
+    """给模型 / pip 缓存挑一个目录：可用空间最大的那块盘（云容器上就是数据盘）。
+
+    工程目录本身**不能**当缓存目录（会往仓库里塞几个 GB），所以碰到它就往上退一级。
+    """
+    candidates: list[tuple[str, float]] = []
+    for disk in report.disks:
+        path = disk["path"]
+        cache_dir = _parent_of(path) if path == report.project_dir else path
+        candidates.append((cache_dir, disk["free_gb"]))
+    if not candidates:
+        return str(Path.home())
+    return max(candidates, key=lambda item: item[1])[0]
+
+
 def suggested_commands(report: Report, engine: str) -> list[str]:
     """给出这台机器上可以直接照抄的安装命令（**Linux / macOS 的 bash 写法**）。
 
@@ -340,13 +369,14 @@ def suggested_commands(report: Report, engine: str) -> list[str]:
     bash 版走的是环境变量 ``TORCH_INDEX``。
     """
     torch = report.recommended_torch or "cu121"
+    cache = _cache_root(report)
     lines: list[str] = []
 
     needs_data_disk = bool(report.project_free_gb and report.project_free_gb < DISK_NEED.get(engine, 12))
     if needs_data_disk:
         lines += [
             "# 工程所在磁盘空间不够，先挪到数据盘（挂载点按实际情况改）",
-            "mkdir -p /root/autodl-tmp && cd /root/autodl-tmp",
+            f"mkdir -p {cache} && cd {cache}",
             "",
         ]
 
@@ -355,8 +385,12 @@ def suggested_commands(report: Report, engine: str) -> list[str]:
         "git clone https://github.com/forward-intoxicate/video2context.git",
         "cd video2context",
         "",
-        "# 2) 让 HuggingFace 缓存别写进系统盘（云容器上系统盘很小，这步很重要）",
-        "export HF_HOME=/root/autodl-tmp/hf-cache",
+        "# 2) 把模型与 pip 缓存挪出系统盘 —— 云容器系统盘通常只有 30GB。",
+        "#    注意 HF_HOME 必须在**运行**时也在，所以要写进 .bashrc，不能只 export 一次。",
+        f"export HF_HOME={cache}/hf-cache",
+        f"export PIP_CACHE_DIR={cache}/pip-cache",
+        f"echo 'export HF_HOME={cache}/hf-cache' >> ~/.bashrc",
+        f"echo 'export PIP_CACHE_DIR={cache}/pip-cache' >> ~/.bashrc",
         "",
     ]
 
@@ -368,7 +402,8 @@ def suggested_commands(report: Report, engine: str) -> list[str]:
     else:
         suffix = " both" if engine == "both" else ""
         lines += [
-            f"# 3) 一键装（约 9GB：环境 3GB + 模型 6GB；torch 用 {torch}）",
+            f"# 3) 一键装（约 9GB：环境 3GB + 模型 6GB）；torch 用 {torch}"
+            + (f"，驱动支持 {report.cuda_version} 向下兼容" if report.cuda_version else ""),
             f"TORCH_INDEX={torch} bash scripts/setup.sh{suffix}",
         ]
 
