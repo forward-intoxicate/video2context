@@ -4,6 +4,23 @@
 
 ## [未发布]
 
+### 新增：README「完整数据流：从视频到输出」整节
+
+原来的「工作原理」只说了"有哪些部件、各自负责什么"，没回答"**数据本身长什么样、在哪一步
+变成什么样**"。新增一节把一次 `python -m video2context 视频.mp4 -f json,srt` 从头拆开：
+
+- 总览 ASCII 图，标出每个中间产物的形态与存放位置（`MediaInfo` → 16kHz 单声道
+  `audio.wav` → `TranscriptionResult` → 四个输出文件）
+- 逐步展开：每步都给了「文件 / 用到的模型或工具 / 输入 / 输出 / 这一步干什么」的小表，
+  以及关键参数的由来（为什么必须转 16kHz 单声道、为什么 PCM 不压缩、为什么不用 ffprobe）
+- 两条识别路径各自讲清模型做了什么：Whisper 侧是 log-mel 频谱 → 编码器 → 解码器，
+  Silero VAD 负责切静音；Qwen 侧画了主进程与 `.venv-qwen` 子进程之间的参数/JSON/日志流向，
+  并说明识别模型与强制对齐模型的分工
+- 把 Qwen 路径 `timestamp_source` 的四档质量单独成表（这是最容易被误解的一处：
+  **只装 Qwen 时 ForcedAligner 是必需品**）
+- 领域词表支线：多出来的"粗转写 → 大模型 → 提示词 → 校验/回退"一遍，以及为什么要回退
+- 末尾一张总表 + 「拿仓库自带样例对一遍」，便于照着核对每一步
+
 ### 修复：Blackwell 显卡（RTX 50 系 / RTX PRO 6000）装 cu126 会报 `no kernel image`
 
 真实事故：一台 RTX PRO 6000 的服务器上，`setup.sh` 装完 cu126 的 torch，

@@ -50,6 +50,7 @@
 - [模型怎么选](#模型怎么选)
 - [实测性能](#实测性能)
 - [工作原理](#工作原理)
+- [完整数据流：从视频到输出](#完整数据流从视频到输出)
 - [常见问题](#常见问题)
 - [项目结构](#项目结构)
 - [开发 / 测试](#开发--测试)
@@ -895,6 +896,282 @@ ffmpeg -i 读元数据  →   ffmpeg -vn -ac 1 -ar 16000  →   识别引擎（�
 - **Qwen3-ASR 为什么走子进程**：它需要 torch，而主工程刻意不装 torch（faster-whisper 走 CTranslate2）。
   两个环境分开后，主环境永远轻量，Qwen 升级 torch/transformers 也不会波及主流程；
   代价是每次转写要多付一次模型加载（约 7～11s），音频越长越无所谓。
+
+---
+
+## 完整数据流：从视频到输出
+
+上一节讲的是"有哪些部件"，这一节讲的是**数据本身**：每一步的输入长什么样、
+输出长什么样、中间经过了谁的手。按一次真实执行
+
+```bash
+python -m video2context 视频.mp4 -f json,srt
+```
+
+从头走一遍。
+
+### 总览：中间产物都是什么
+
+```
+ 视频.mp4  （容器 + 视频轨 + 音频轨，44.1kHz 立体声…）
+   │
+   │ ① 媒体探测      ffmpeg -i 视频.mp4（只读元信息，不产出新文件）
+   ▼
+ MediaInfo{ duration=41.8, has_video=True, has_audio=True, format_name="mov,mp4,…" }
+   │                                                    ← 只活在内存里
+   │ ② 抽取音频      ffmpeg -vn -sn -dn -map 0:a:0 -ac 1 -ar 16000 -c:a pcm_s16le
+   ▼
+ audio.wav  16kHz / 单声道 / 16bit PCM（≈ 32KB/s；41.8s → 约 1.3MB）
+   │                                                    ← 临时目录，--keep-audio 才保留
+   │ ③ 语音识别      识别引擎二选一
+   │    ├─ faster-whisper ──► Whisper large-v3（CTranslate2 版）+ Silero VAD
+   │    └─ qwen3-asr ──────► Qwen3-ASR-1.7B [+ Qwen3-ForcedAligner-0.6B]
+   ▼
+ TranscriptionResult{
+     text:     "……整段文字……",
+     segments: [{id, start, end, text, avg_logprob, …}, …],
+     language: "zh" / "Chinese", duration: 41.8, model: …, device: …, …
+ }
+   │
+   │ ④ 组装 + 写出    writers.write_outputs()
+   ▼
+ output/视频.json   ← 主产物：上面全部结构 + 参数快照
+ output/视频.srt    ← 从 segments 渲染
+ output/视频.txt    ← 从 segments 渲染（不带时间戳）
+ output/视频.vtt    ← 从 segments 渲染
+```
+
+> 文件命名：默认取输入视频的文件名（`视频.mp4` → `视频.json`），落在 `output/` 下。
+> 同名文件已存在时自动加序号（`视频-1.json`），不会静默覆盖；`--overwrite` 可关掉这个行为。
+
+### ① 媒体探测
+
+| 项目 | 内容 |
+|---|---|
+| 文件 | `video2context/ffmpeg_tools.py` → `probe_media()` |
+| 用到的 | **ffmpeg 本体**，不涉及任何模型 |
+| 输入 | 视频文件路径 |
+| 输出 | `MediaInfo`（内存里的结构体，不落盘） |
+
+实际执行的是 `ffmpeg -hide_banner -i 视频.mp4` —— **故意不给输出文件**，让 ffmpeg 把
+"Input #0, mov,mp4,… / Duration: 00:00:41.80 / Stream #0:0 Video… / Stream #0:1 Audio…"
+这堆元信息打到 stderr，然后用正则从里面抠出时长、容器格式、有没有音轨/视频轨。
+
+这一步的工作就是**回答"能不能转、要不要提示"**：没有音频轨就直接报错终止
+（`该文件不含音频轨道，无法转写`），时长则用来算进度条和实时率。不用 ffprobe 是有意的，
+因为自带的静态 ffmpeg 里不含 ffprobe。
+
+### ② 抽取音频
+
+| 项目 | 内容 |
+|---|---|
+| 文件 | `video2context/ffmpeg_tools.py` → `extract_audio()` |
+| 用到的 | **ffmpeg 本体**（做解码和重采样），不涉及任何模型 |
+| 输入 | 任意容器/编码的视频或音频 |
+| 输出 | `audio.wav`：**16000 Hz、单声道、16bit PCM（`pcm_s16le`）** |
+
+关键参数就三个：`-vn -sn -dn -map 0:a:0` 只取第一条音轨丢掉画面与字幕，
+`-ac 1 -ar 16000` 混成单声道并重采样到 16kHz，`-c:a pcm_s16le` 存成**未压缩**的 PCM。
+
+为什么要这么"降级"：
+
+- **16kHz 是识别模型自己的输入要求**。Whisper 的 log-mel 特征就是基于 16kHz 的；
+  Qwen3-ASR 同样按 16kHz 读。提前在 ffmpeg 里一次重采样，比让每个引擎各自再转一遍干净。
+- **单声道**：语音识别不需要立体声，混成一路就少一半数据量。
+- **PCM 不压缩**：后面 VAD、解码都要随机访问采样点，压缩格式反而要多一层解码。
+  代价是文件变大 —— 41.8 秒的音频约 1.3MB，`16000 × 2 字节 × 秒数`。
+
+除非加 `--keep-audio`，这个 wav 会写在系统临时目录里（`v2c-XXXX/audio.wav`），
+流水线结束（无论成功失败）立刻删掉。`--start` / `--duration` 就是在这条 ffmpeg 命令上
+加 `-ss` / `-t`，所以"只转前 10 分钟"是真的只解码那段，不是转完再截。
+
+### ③ 语音识别（整条链路上唯一用到模型的一步）
+
+先由 `video2context/pipeline.py` 的 `resolve_engine()` 决定用哪个引擎
+（优先级：`--engine` > `V2C_ENGINE` > 本机实际装了哪个 > 默认 `qwen3-asr`），
+再交由下面两条完全不同的路径。
+
+#### 路径 A：`faster-whisper` 引擎
+
+| 项目 | 内容 |
+|---|---|
+| 调度 | `video2context/transcriber.py` → `Transcriber.transcribe()` |
+| 模型 1 | **Whisper large-v3** 的 CTranslate2 转换版（1.55B 参数，MIT 许可） |
+| 模型 2 | **Silero VAD v6**（`silero_vad_v6.onnx`，约 1.2MB，随 faster-whisper 附带） |
+| 输入 | 16kHz 单声道 wav |
+| 输出 | 带起止时间的分段列表 + 整段文字 + 语种 |
+
+数据在里面这样变：
+
+```
+16kHz PCM 采样点
+  │  Silero VAD：滑动窗口判定"这段是不是人在说话"
+  ▼
+说话区间列表 → 丢掉静音段（静音是 Whisper 产生"幻觉字幕"的主要来源）
+  │  剩下的音频切片
+  ▼
+log-mel 频谱：每 10ms 一帧、128 维（large-v3 的设定）
+  │  编码器（Transformer encoder）
+  ▼
+声学表示
+  │  解码器：beam search 逐 token 出字，遇低质量分段自动升高 temperature 重解
+  ▼
+token 序列 ──► 按时间戳切成分段 ──► 时间戳平移回原音轨（因为前面丢了静音）
+```
+
+- **Silero VAD** 的作用就是"哪几段真的有人在说话"。它是个极小的 ONNX 模型，
+  只做语音/非语音二分类，成本几乎可以忽略，但能显著减少长静音视频里的乱码字幕。
+  本工程把它的静音判定阈值从库默认的 2000ms 调到 **500ms**，字幕切得更细。
+- **Whisper large-v3** 是真正"听懂"的模型：它把频谱映射成文字，
+  顺便输出每段的时间戳和语种。**CTranslate2** 不是模型，是推理引擎 ——
+  它把 PyTorch 模型转成自己的格式并做算子融合与量化（默认 `float16`，
+  CPU 上退到 `int8`），所以这个引擎**完全不需要 torch**。
+- 语种识别也是这一步顺带得到的：解码开头几秒时模型会给出语言概率，
+  写进结果的 `asr.language` / `asr.language_probability`。用 `--language zh` 指定可以跳过它，
+  更快也更稳。
+
+#### 路径 B：`qwen3-asr` 引擎（默认）
+
+| 项目 | 内容 |
+|---|---|
+| 调度 | `video2context/qwen_engine.py` → `QwenAsrEngine.transcribe()` |
+| 干活的 | `video2context/_qwen_worker.py`（在 `.venv-qwen` 里跑的**子进程**） |
+| 模型 1 | **Qwen3-ASR-1.7B**（阿里，Apache-2.0）—— 出文字 |
+| 模型 2 | **Qwen3-ForcedAligner-0.6B**（Apache-2.0）—— 出时间戳，可选但默认装 |
+| 输入 | 16kHz 单声道 wav |
+| 输出 | 整段文字（默认**不带**时间戳）+ 词级时间戳（带对齐模型时） |
+
+这条路径是**两个进程配合**完成的，数据交换方式很朴素：
+
+```
+主进程 .venv（无 torch）                       子进程 .venv-qwen（有 torch）
+────────────────────────                      ──────────────────────────
+ 组装命令行参数（--wav/--model/--aligner/
+ --language/--context/--out …）
+        │  subprocess.Popen
+        ├───────────────────────────────────►  _qwen_worker.py
+        │                                       ├─ 加载 Qwen3-ASR-1.7B
+        │                                       ├─ model.transcribe(audio=…)
+        │                                       ├─ （若给了 --aligner）
+        │                                       │   再跑对齐模型拿词级时间戳
+        │                                       └─ 结果写进临时 result.json
+        │  stderr 逐行转发（进度/日志）  ◄──────┤
+        │  result.json 读回来            ◄──────┘
+        ▼
+ 文本 + [{"text","start","end"}, …] 的 token 级时间戳
+        │  切句、对齐、兜底（见下）
+        ▼
+ TranscriptionResult（和 Whisper 路径**同一个结构**）
+```
+
+- **Qwen3-ASR-1.7B** 是"音频进、文字出"的模型：音频经编码器变成声学 token，
+  再由一个 LLM 解码成文本。它在**中文同音词、数学符号、专有名词**上明显强于 large-v3
+  （实测 `求导` vs `球倒`、WER 0.00% vs 4.35%，见[实测性能](#实测性能)）。
+  代价是它**只做原语言转写**：不分段、不出时间戳、不做翻译。
+- **Qwen3-ForcedAligner-0.6B** 就是来补时间戳的。强制对齐（forced alignment）的意思是：
+  文字已经有了，现在让模型回答"这几个字分别落在音频的哪一段"。它逐 token 输出起止时间，
+  精度到词。**没有它，字幕时间只能靠估算**。
+- 跨进程的代价是每次都要重新加载模型（约 7～11s）；好处是主环境永远不用装 torch。
+
+#### ③-b 字幕时间是怎么来的（Qwen 路径专有，四档质量）
+
+因为 Qwen 本身不吐时间戳，`qwen_engine.py` 里有一段专门的兜底逻辑，
+并把**实际用了哪一档**如实写进 JSON 的 `asr.timestamp_source`：
+
+| `timestamp_source` | 怎么来的 | 精度 | 触发条件 |
+|---|---|---|---|
+| `forced-aligner` | 对齐模型给出 token 级时间，再由 `group_time_stamps()` 在句末标点处切开 | **精确到词** | 装了 `Qwen3-ForcedAligner-0.6B` |
+| `vad-proportional` | 按标点切句，再按字数比例分配到 Silero VAD 找到的**说话区间**里 | 估算，但落在有人声的地方 | 没对齐模型，但装了 faster-whisper（借它的 VAD） |
+| `even-spread` | 按标点切句，在整条音轨上**平均分配** | 最粗，长静音视频会把字幕铺到没人说话的地方 | 只部署 Qwen（没有 VAD），也没对齐模型 |
+| `none` | 没切出任何分段 | — | 识别结果为空（纯音乐/静音） |
+
+这解释了一个反直觉的设计：**只装 Qwen 的部署里，ForcedAligner 是默认装上的"必需品"而不是可选项**
+—— 因为那种机器没有 faster-whisper，也就没有 VAD，少了它就是最粗的 `even-spread`。
+想省这 1.8GB 用 `--qwen-aligner off`。
+
+### ③-c 可选支线：领域词表（`--auto-glossary` / `--glossary`）
+
+开了词表会在"抽音频"和"正式识别"之间多插一遍，整条流水线从 3 步变 4 步：
+
+| 项目 | 内容 |
+|---|---|
+| 文件 | `video2context/glossary.py`（词表结构/打分）、`video2context/llm.py`（大模型调用） |
+| 用到的 | **一个 OpenAI 兼容接口的对话大模型**（`V2C_LLM_*`，如 DeepSeek/通义）—— 这是本工程唯一一次调用云端 |
+| 第一遍 | 只取前 90 秒（`--scan-duration`）粗转写一遍 → 把这段文字丢给大模型 → 它回一个 JSON，里面是「错形 → 正确」的符号对照 |
+| 第二遍 | 把词表拼成**极短**的提示词（几十字）注入正式识别，正式识别本身**不再联网** |
+
+大模型在这一步的作用不是转写，而是**从粗糙的初稿里认领"这段话讲的是哪个领域、哪些符号被听错了"**。
+坑在于：faster-whisper 的提示词偏置会**静默失效**（措辞一变就完全不起作用），
+所以 `pipeline.py` 在识别之后会拿词表去结果里数命中数，一次都没命中就**自动回退**到无词表的版本，
+并把 `glossary.verification.fallback_used = true` 写进 JSON —— 宁可退回没修，也不留一个"以为修好了"的假象。
+
+> ⚠️ Qwen 引擎侧的 `context` 词表偏置**实测没有效果**（换成完全无关的内容输出逐字相同），
+> 词表仍会写进 JSON 备查，但别指望它修同音词。要修同音词请用
+> `--engine faster-whisper --glossary terms.txt`。详见 [docs/models.md 6.4](docs/models.md#64-实测context词表偏置没有效果)。
+
+### ④ 组装结果并写出
+
+| 项目 | 内容 |
+|---|---|
+| 文件 | `video2context/pipeline.py`（组装）、`video2context/writers.py`（序列化） |
+| 用到的 | 无模型，纯数据搬运 |
+| 输入 | `TranscriptionResult` + `MediaInfo` + 词表 + 本次运行的参数 |
+| 输出 | `output/<名字>.json` / `.txt` / `.srt` / `.vtt` |
+
+`pipeline.process()` 把这些拼成一个 JSON 对象：
+
+| 顶层字段 | 内容 |
+|---|---|
+| `source` | 从 `MediaInfo` 来的：原文件路径、大小、时长、容器格式、有没有画面、`--start/--duration` 裁剪信息 |
+| `audio` | 音频规格：16000Hz / 1 声道 / `pcm_s16le`，以及 wav 是否被保留（`--keep-audio`） |
+| `asr` | 从 `TranscriptionResult` 来的：**引擎名、模型名、设备、`compute_type`、语种、耗时、实时率**，以及本次全部参数快照 |
+| `text` | 整段文字（Whisper 路径是各段拼接，Qwen 路径是模型直接输出的全文） |
+| `segments` | 分段列表：`{id, start, end, text, avg_logprob, no_speech_prob, temperature, compression_ratio}`，加 `--word-timestamps` 还会有 `words[{start,end,word,probability}]` |
+| `glossary` | 只在用了词表时出现：符号对照表、来源、以及上面说的验证结果 |
+
+然后 `write_outputs()` 按 `-f` 指定的格式各写一份。**除 JSON 外的三种都是从 `segments` 现场渲染的**：
+
+- `.txt` —— 每段一行纯文字，**不带**时间戳（要时间轴就用 `.srt` / `.vtt`）；
+- `.srt` —— 序号 + `00:00:01,200 --> 00:00:03,400`（逗号是 SRT 的规范写法）+ 文字；
+- `.vtt` —— 同样的时间轴但用点号，开头加 `WEBVTT`，可直接被 HTML5 `<video><track>` 使用。
+
+`asr` 里存一份参数快照是有意的：**同一段音频隔一个月再跑，结果不一样时，你能看出是哪个参数变了。**
+
+### 一张表看完
+
+| 步骤 | 数据形态的变化 | 文件 | 用到的模型 / 工具 | 这一步的作用 |
+|---|---|---|---|---|
+| ① 媒体探测 | 视频文件 → `MediaInfo` 结构体 | `ffmpeg_tools.py` | ffmpeg | 问清楚时长、有没有音轨，决定能不能转 |
+| ② 抽取音频 | 视频 → 16kHz 单声道 PCM wav | `ffmpeg_tools.py` | ffmpeg | 把任意格式归一化成识别模型要的输入 |
+| ③-a 词表（可选） | 前 90s 音频 → 粗文字 → 符号对照表 | `glossary.py` / `llm.py` | 云端对话大模型 | 认出领域，找出常被听错的符号 |
+| ③-b 识别（Whisper） | wav → 频谱 → 分段文字 + 时间戳 + 语种 | `transcriber.py` | **Whisper large-v3**（CTranslate2）、**Silero VAD v6** | 真正把声音变成字，顺带切静音、判语种 |
+| ③-b 识别（Qwen） | wav → 整段文字（+ 词级时间戳） | `qwen_engine.py` → `_qwen_worker.py` | **Qwen3-ASR-1.7B**、**Qwen3-ForcedAligner-0.6B** | 中文/术语更准的识别；对齐模型补出时间戳 |
+| ③-c 词表校验 | 文字 × 词表 → 命中数 → 可能回退重跑 | `pipeline.py` / `glossary.py` | 无 | 确认偏置真的生效，没生效就退回，不留假象 |
+| ④ 组装 + 写出 | 结果对象 → JSON / TXT / SRT / VTT | `pipeline.py` / `writers.py` | 无 | 落盘，附带完整参数快照便于复现 |
+
+### 拿仓库自带的样例对一遍
+
+`samples/demo_zh_math.mp4`（41.8 秒，中文数学讲解）走默认的 Qwen 路线：
+
+```bash
+python -m video2context samples/demo_zh_math.mp4 --engine qwen3-asr -f json,srt
+```
+
+| 阶段 | 实到的数据 |
+|---|---|
+| 输入 | 41.8s 的 mp4，含视频轨 + 音频轨 |
+| ② 之后 | `audio.wav`，16000Hz / 单声道 / 16bit，约 1.3MB |
+| ③ 模型 | `Qwen3-ASR-1.7B`（识别）+ `Qwen3-ForcedAligner-0.6B`（时间戳） |
+| ③ 之后 | 一整段中文文字 + 逐 token 时间戳 → 在句末标点处切成若干句，`timestamp_source = "forced-aligner"` |
+| ④ 之后 | `output/demo_zh_math.json` + `output/demo_zh_math.srt` |
+
+想确认每一步真的走了：**日志默认就会逐条打印**上面每一个阶段
+（`[1/3] 探测媒体信息…`、`[2/3] 提取音频…`、`[3/3] 语音识别…`，
+以及"按时间戳切出 N 段（强制对齐，时间精确到词）"这样的中间结论）；
+加 `-q` 则只留结果路径。
+
+**更细的机制论证**（为什么关 `condition_on_previous_text`、为什么保留温度回退序列、
+为什么 Qwen 走子进程而不是同进程）见 [docs/architecture.md](docs/architecture.md)。
 
 ---
 
